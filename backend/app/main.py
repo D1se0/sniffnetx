@@ -57,8 +57,13 @@ def note_packet():
     pass  # la presión por WebSocket va por batch en el broadcaster
 
 
+LAST_CAPTURE_ERROR = {"msg": "", "ts": 0.0}   # visible para el frontend vía /api/capture/status
+
+
 def capture_error(msg):
     print(f"[capture-error] {msg}")
+    LAST_CAPTURE_ERROR["msg"] = str(msg)
+    LAST_CAPTURE_ERROR["ts"] = time.time()
 
 
 def capture_stopped():
@@ -160,7 +165,21 @@ def api_status():
         "started_at": engine.started_at,
         "elapsed": time.time() - engine.started_at if engine.running else 0,
         "buffered_packets": len(engine.buffer),
+        "last_error": LAST_CAPTURE_ERROR["msg"],
+        "root": (os.geteuid() == 0 if hasattr(os, "geteuid") else False),
     }
+
+
+@app.get("/api/can-capture")
+def api_can_capture():
+    """¿Puedo abrir un raw socket (permisos de captura)?"""
+    import socket as _socket
+    try:
+        s = _socket.socket(_socket.AF_PACKET, _socket.SOCK_RAW, _socket.htons(3))
+        s.close()
+        return {"can": True}
+    except PermissionError:
+        return {"can": False, "error": "sin CAP_NET_RAW", "uid": os.geteuid() if hasattr(os, "geteuid") else -1}
 
 
 @app.get("/api/data")

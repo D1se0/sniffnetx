@@ -39,6 +39,19 @@ export default function Topbar({ data, status }) {
           method: "POST",
           body: JSON.stringify({ iface, bpf, promisc: true, snaplen: 65535 }),
         });
+        // El motor arranca en un hilo; si muere por permisos, status.running=false
+        // y el error aparece en status.last_error. Espera corta y si no está LIVE,
+        // pinta el diagnóstico en el Topbar.
+        await new Promise((r) => setTimeout(r, 2200));
+        const st = await api("/api/capture/status");
+        if (!st.running && st.last_error) {
+          const perm = /not permitted|permission|errno 1/i.test(st.last_error);
+          setErr(
+            perm
+              ? `Sin permisos de captura (${st.last_error}). Lanza la app con:  sudo ./start-desktop.sh  — o da capacidades:  sudo setcap 'cap_net_raw,cap_net_admin=eip' "$(readlink -f ${window.SNIFFNEX_PY || "backend/venv/bin/python3"})"`
+              : st.last_error,
+          );
+        }
       }
     } catch (e) {
       setErr(e.message);
@@ -81,6 +94,26 @@ export default function Topbar({ data, status }) {
           </span>
         )}
       </div>
+
+      {err && (
+        <motion.div
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="capture-error-banner"
+          title="click para cerrar"
+          onClick={() => setErr("")}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 8,
+            maxWidth: 380, padding: "6px 12px", borderRadius: 9,
+            fontSize: 12, lineHeight: 1.45, cursor: "pointer",
+            border: "1px solid rgba(251,113,133,.4)",
+            background: "rgba(251,113,133,.12)", color: "#fecdd3",
+            overflow: "hidden",
+          }}
+        >
+          <WifiOff size={13} style={{ flexShrink: 0 }} /><span>{err}</span>
+        </motion.div>
+      )}
 
       {recentPkts > 0 && status.running && (
         <motion.span

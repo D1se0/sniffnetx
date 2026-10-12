@@ -92,10 +92,16 @@ class CaptureEngine:
             def _cb(pkt):
                 if self.stop_evt.is_set():
                     return True  # detiene el sniff() de scapy
-                self.app.analyzer.process(pkt)
+                try:
+                    self.app.analyzer.process(pkt)
+                except Exception:
+                    pass   # un paquete malformato no debe matar la captura
                 with self._lock:
                     self.buffer.append(pkt)
-                self.app.note_packet()
+                try:
+                    self.app.note_packet()
+                except Exception:
+                    pass
             kwargs = dict(iface=iface or None, filter=bpf or None, prn=_cb,
                           store=False, stop_filter=lambda _p: self.stop_evt.is_set(),
                           promisc=promisc, timeout=2)
@@ -105,13 +111,28 @@ class CaptureEngine:
                     kwargs["snaplen"] = snaplen
                 except Exception:
                     pass
+            # Bucle externo: sniﬀ() con timeout=2 solo escucharía 2 s; Re-lanzarlo
+            # indefinidamente hasta que stop_evt se active — así el botón Detener
+            # es lo único que corta la captura.
             try:
-                sniff(**kwargs)
-            except Exception as e:  # permisos / iface invalida
-                self.app.capture_error(str(e))
+                while not self.stop_evt.is_set():
+                    if not self.running:
+                        break
+                    try:
+                        sniff(**kwargs)
+                    except Exception as e:   # permisos / iface invalida
+                        if not self.stop_evt.is_set():
+                            self.app.capture_error(str(e))
+                        break
+            except Exception as e:
+                if not self.stop_evt.is_set():
+                    self.app.capture_error(f"hilo captura: {e}")
             finally:
                 self.running = False
-                self.app.capture_stopped()
+                try:
+                    self.app.capture_stopped()
+                except Exception:
+                    pass
 
         self.thread = threading.Thread(target=_run, daemon=True, name="sniffnex-capture")
         self.thread.start()
