@@ -56,6 +56,13 @@ if [ "$(id -u)" = "0" ]; then
   export SUDO_HOME="${SUDO_HOME:-/home/kali}"
 fi
 
+# ---------- instancia previa? matarla (evita puertos ocupados y doble GUI) ----------
+if pgrep -f "electron/dist/electron desktop" > /dev/null 2>&1; then
+  echo "[*] Cerrando instancia previa de SniffNex Desktop…"
+  pkill -f "electron/dist/electron desktop" 2>/dev/null
+  sleep 2
+fi
+
 case "$ACTION" in
   build)
     echo "[*] Generando paquetes portables (dir + AppImage)…"
@@ -77,8 +84,10 @@ case "$ACTION" in
       RHOME="${SUDO_HOME:-/home/kali}"
       echo "[i] Soy root: abro GUI como uid=$RUID ($(logname 2>/dev/null || echo kali)) y backend con sudo"
       if [ -z "$DISPLAY" ]; then export DISPLAY=:0; fi
+      # setsid --wait: la GUI adopta una sesión nueva y sobrevive al sudo/terminal
       exec setpriv --reuid="$RUID" --regid="$RGID" --init-groups \
         env HOME="$RHOME" DISPLAY="$DISPLAY" \
+        setsid --wait \
         desktop/node_modules/.bin/electron desktop "${ELECTRON_FLAGS[@]}"
     else
       echo "[i] Sin root. Captura en iface real ⇒ sudo ./start-desktop.sh"
