@@ -17,7 +17,6 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .analysis import TrafficAnalyzer
@@ -28,19 +27,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 # Servir el frontend compilado (../frontend/dist) — modo app desktop-portable
 _FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
-if _FRONTEND_DIST.is_dir():
-    app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="assets")
 
-    @app.get("/", include_in_schema=False)
-    def _index():
-        return FileResponse(str(_FRONTEND_DIST / "index.html"))
-
-    @app.get("/{path:path}", include_in_schema=False)
-    def _spa(path: str):
-        f = _FRONTEND_DIST / path
-        if f.is_file():
-            return FileResponse(str(f))
-        return FileResponse(str(_FRONTEND_DIST / "index.html"))
 
 analyzer = TrafficAnalyzer()
 class _State:
@@ -561,3 +548,21 @@ def api_packets_recent(limit: int = Query(300, le=2000)):
 @app.get("/api/health")
 def health():
     return {"ok": True, "ts": datetime.now(tz=timezone.utc).isoformat(timespec="seconds")}
+
+
+# ----- UI SPA: SIEMPRE la ultima ruta, para no tapar ninguna API -----
+@app.get("/", include_in_schema=False)
+def _index():
+    if _FRONTEND_DIST.is_dir():
+        return FileResponse(str(_FRONTEND_DIST / "index.html"))
+    return JSONResponse({"ok": True, "ui": "no compilada: cd frontend && npm run build"})
+
+
+@app.get("/{path:path}", include_in_schema=False)
+def _spa(path: str):
+    if _FRONTEND_DIST.is_dir():
+        f = _FRONTEND_DIST / path
+        if f.is_file() and str(f.resolve()).startswith(str(_FRONTEND_DIST.resolve())):
+            return FileResponse(str(f))
+        return FileResponse(str(_FRONTEND_DIST / "index.html"))
+    raise HTTPException(404, "frontend no compilado")

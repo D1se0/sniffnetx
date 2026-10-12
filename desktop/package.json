@@ -1,0 +1,34 @@
+{
+  "name": "sniffnetx-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --linux dir AppImage",
+    "dist:dir": "electron-builder --linux dir"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.d1se0.sniffnetx",
+    "productName": "SniffNex",
+    "directories": { "output": "release", "buildResources": "build" },
+    "files": [
+      "main.js",
+      "preload.js",
+      "assets/icon.svg"
+    ],
+    "extraResources": [
+      { "from": "../backend", "to": "backend" },
+      { "from": "../frontend/dist", "to": "frontend-dist" }
+    ],
+    "linux": {
+      "target": ["dir", "AppImage"],
+      "category": "Network",
+      "maintainer": "D1se0"
+    }
+  }
+}
