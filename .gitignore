@@ -1,0 +1,11 @@
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.log
+.DS_Store
+frontend/dist/segments/
+captures/*.pcap
+!captures/.gitkeep
