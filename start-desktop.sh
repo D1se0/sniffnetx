@@ -44,6 +44,13 @@ if [ ! -f frontend/dist/index.html ]; then
   (cd frontend && npm install --silent && npm run build)
 fi
 
+# Electron no arranca como root sin --no-sandbox (crbug.com/638180)
+ELECTRON_FLAGS=("--no-sandbox")
+if [ "$(id -u)" = "0" ]; then
+  ELECTRON_FLAGS+=("--disable-gpu-sandbox" "--disable-setuid-sandbox" "--no-zygote")
+  export ELECTRON_DISABLE_SECURITY_WARNINGS=1
+fi
+
 case "$ACTION" in
   build)
     echo "[*] Generando paquetes portables (dir + AppImage)…"
@@ -52,14 +59,14 @@ case "$ACTION" in
     ;;
   sudo)
     echo "[*] Arrancando SniffNex Desktop con sudo (captura cruda OK)…"
-    exec sudo -E env "PATH=$PATH" desktop/node_modules/.bin/electron desktop --no-sandbox
+    exec sudo -E env "PATH=$PATH" desktop/node_modules/.bin/electron desktop "${ELECTRON_FLAGS[@]}"
     ;;
   run)
     echo "[*] Arrancando SniffNex Desktop…"
     if [ "$(id -u)" != "0" ]; then
       echo "[i] Sin root. Captura en iface real ⇒ sudo ./start-desktop.sh"
     fi
-    exec desktop/node_modules/.bin/electron desktop
+    exec desktop/node_modules/.bin/electron desktop "${ELECTRON_FLAGS[@]}"
     ;;
   *)
     echo "uso: ./start-desktop.sh [run|sudo|build]"; exit 1
