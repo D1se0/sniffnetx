@@ -174,7 +174,7 @@ def ftp_login(fr, to):
     ]
 
 def smtp_send_mail(fr, to):
-    """Conversación SMTP de商务 con FROM/RCPT en claro. Probará Mensajes."""
+    """Conversación SMTP de negocio con FROM/RCPT en claro. Probará Mensajes."""
     return [
         (Ether(src=FAKE_MACS[fr], dst=FAKE_MACS[to]) / IP(src=IP_NET[fr], dst=IP_NET[to]) /
          TCP(sport=52231, dport=25, flags="PA") /
