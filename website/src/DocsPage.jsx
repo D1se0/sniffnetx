@@ -156,7 +156,7 @@ export default function DocsPage() {
   return (
     <div>
       <nav className="nav">
-        <a href="/" className="nav-logo" style={{ color: "var(--txt)" }}>
+        <a href="./" className="nav-logo" style={{ color: "var(--txt)" }}>
           <Terminal size={18} color="var(--accent)" /> Sniff<span className="nex">Nex</span>
           <span style={{ color: "var(--dim)", fontSize: 12, fontWeight: 500 }}> · Documentación</span>
         </a>
@@ -166,7 +166,7 @@ export default function DocsPage() {
           <a href="#credentials">Credenciales</a>
           <a href="#dns">DNS</a>
           <a href="#params">Parámetros</a>
-          <a href="/" className="docs-back"><ArrowLeft size={14} /> Volver a la portada</a>
+          <a href="./" className="docs-back"><ArrowLeft size={14} /> Volver a la portada</a>
         </div>
       </nav>
 
@@ -318,7 +318,7 @@ export default function DocsPage() {
           <strong style={{ color: "var(--txt)" }}>SniffNex</strong>
           <span className="mono">v1.0 · GPL-3.0 · docs</span>
         </div>
-        <div className="mono">portada · <a href="/">← volver</a></div>
+        <div className="mono">portada · <a href="./">← volver</a></div>
       </footer>
     </div>
   );

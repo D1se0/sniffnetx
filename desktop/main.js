@@ -12,6 +12,15 @@ const PORT = process.env.SNIFFNEX_PORT || 8099;
 let backendProc = null;
 let win = null;
 
+// Al ejecutar como root, asegurar un HOME válido (Electron lo exige para userData):
+// si sudo no propagó HOME, Electron escribiría en /undefined o /nonexistent → crash negro.
+if ((typeof process.getuid === "function" && process.getuid() === 0) &&
+    (!process.env.HOME || !fs.existsSync(process.env.HOME))) {
+  process.env.HOME = "/root";
+  try { fs.mkdirSync("/root/.config", { recursive: true }); } catch {}
+}
+app.setPath("userData", path.join(process.env.HOME || os.tmpdir(), ".config", "sniffnex-desktop"));
+
 function resPath(...p) {
   return isPackaged
     ? path.join(process.resourcesPath, ...p)
@@ -68,6 +77,7 @@ function createWindow() {
     minHeight: 680,
     backgroundColor: "#07090e",
     autoHideMenuBar: true,
+    show: false,
     title: "SniffNex — Network Forensics",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -75,7 +85,27 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+
+  // Log de errores JS del renderer al fichero en vez de ventanas emergentes
+  const logF = () => path.join(os.tmpdir(), "sniffnex-desktop.log");
+  win.webContents.on("did-fail-load", (_e, code, desc, url) => {
+    fs.appendFileSync(logF(), `did-fail-load(${code}) ${desc} ${url}\n`);
+    // Reintenta una vez pasado un momento — el backend recién spawneado a veces pierde la 1ª
+    setTimeout(() => { try { win.loadURL(`http://127.0.0.1:${PORT}/`); } catch {} }, 1200);
+  });
+  win.webContents.on("console-message", (_e, level, message, line, src) => {
+    fs.appendFileSync(logF(), `[renderer-${level}] ${message} ${src}:${line}\n`);
+  });
+  win.webContents.on("render-process-gone", (_e, details) => {
+    fs.appendFileSync(logF(), `render-process-gone: ${details.reason}\n`);
+  });
+  // No popups de diálogo para JS errors — silencio y log
+  win.webContents.on("unresponsive", () => { /* no-op */ });
+
   win.loadURL(`http://127.0.0.1:${PORT}/`);
+  win.once("ready-to-show", () => { win.show(); });
+  // fallback: si a los 10s aún no se mostró, fuerza show (evita ventana "negra")
+  setTimeout(() => { try { if (win && !win.isVisible()) win.show(); } catch {} }, 10000);
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith(`http://127.0.0.1:${PORT}`)) return { action: "allow" };
     shell.openExternal(url);
@@ -88,10 +118,11 @@ app.whenReady().then(() => {
   startBackend();
   waitForBackend((err) => {
     if (err) {
-      const log = fs.readFileSync(path.join(os.tmpdir(), "sniffnex-desktop.log"), "utf8").slice(-2000);
+      let log = "";
+      try { log = fs.readFileSync(path.join(os.tmpdir(), "sniffnex-desktop.log"), "utf8").slice(-1600); } catch {}
       dialog.showErrorBox(
         "SniffNex no pudo arrancar el backend",
-        `¿Tienes scapy/fastapi/uvicorn instalados para:\n${findPython()}\n\nSugerencia:\n  ${findPython()} -m pip install scapy fastapi "uvicorn[standard]"\n\nÚltimas líneas del log:\n\n${log}`
+        `Falta algo en el venv. Ejecuta:\n  ${findPython()} -m pip install -r backend/requirements.txt\n\nÚltimas líneas del log:\n${log}`
       );
       app.quit();
       return;

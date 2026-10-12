@@ -45,7 +45,7 @@ export default function App() {
           <a href="#features">Características</a>
           <a href="#desktop">Escritorio</a>
           <a href="#quickstart">Inicio rápido</a>
-          <a href="/docs.html" className="docs-link-strong">Documentación</a>
+          <a href="docs.html" className="docs-link-strong">Documentación</a>
           <a href="#faq">FAQ</a>
           <a href="https://github.com/D1se0/sniffnetx" target="_blank" rel="noreferrer" className="nav-cta">
             <Download size={15} /> Repositorio
@@ -70,7 +70,7 @@ export default function App() {
           </motion.p>
           <motion.div className="hero-actions" {...fadeUp(0.24)}>
             <a href="#quickstart" className="btn-xl primary"><Terminal size={17} /> Empezar en 60 segundos</a>
-            <a href="/docs.html" className="btn-xl outline docs-btn-outline"><FileQuestion size={17} /> Documentación completa</a>
+            <a href="docs.html" className="btn-xl outline docs-btn-outline"><FileQuestion size={17} /> Documentación completa</a>
           </motion.div>
 
           <motion.div className="terminal" {...fadeUp(0.32)}>
@@ -249,7 +249,7 @@ export default function App() {
             interrumpir la lectura de la portada.
           </p>
           <motion.a
-            href="/docs.html"
+            href="docs.html"
             className="btn-xl primary"
             style={{ marginTop: 22, display: "inline-flex" }}
             {...fadeUp(0.1)}

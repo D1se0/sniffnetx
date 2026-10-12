@@ -49,6 +49,11 @@ ELECTRON_FLAGS=("--no-sandbox")
 if [ "$(id -u)" = "0" ]; then
   ELECTRON_FLAGS+=("--disable-gpu-sandbox" "--disable-setuid-sandbox" "--no-zygote")
   export ELECTRON_DISABLE_SECURITY_WARNINGS=1
+  # HOME válido para el userData de Electron (evita pantalla negra y JS errors)
+  if [ ! -d /root/.config ]; then
+    mkdir -p /root/.config 2>/dev/null || true
+  fi
+  export HOME=/root
 fi
 
 case "$ACTION" in
@@ -66,6 +71,9 @@ case "$ACTION" in
     if [ "$(id -u)" != "0" ]; then
       echo "[i] Sin root. Captura en iface real ⇒ sudo ./start-desktop.sh"
     fi
+    # Nota: si ejecutas el launcher YA con sudo, ELECTRON_FLAGS ya lleva --no-sandbox.
+    # El FATAL puede aparecer una vez si electron fue lanzado la vez anterior SIN flag:
+    # es un crash inmediato y este remedio evita que se repita en este arranque.
     exec desktop/node_modules/.bin/electron desktop "${ELECTRON_FLAGS[@]}"
     ;;
   *)
