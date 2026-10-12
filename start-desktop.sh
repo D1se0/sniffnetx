@@ -75,22 +75,43 @@ case "$ACTION" in
     ;;
   run)
     echo "[*] Arrancando SniffNex Desktop…"
+    # 1) BACKEND: como root con sudo; sino, directo. TIENE que estar en marcha antes
+    #    de abrir la GUI (Electron la espera en /api/health).
+    if [ ! -x backend/venv/bin/python3 ]; then
+      echo "[!] No hay venv — ejecuta primero sin sudo ./start-desktop.sh (crea backend/venv)"
+    fi
+    if ! curl -s --max-time 2 "http://127.0.0.1:8099/api/health" | grep -q '\"ok\"'; then
+      if [ "$(id -u)" = "0" ]; then
+        echo "[i] Backend en marcha con sudo (captura en ifaces reales OK)…"
+        setsid nohup backend/venv/bin/python3 -m uvicorn app.main:app \
+          --host 127.0.0.1 --port 8099 --app-dir backend \
+          < /dev/null >> /tmp/sniffnex-desktop.log 2>&1 &
+      else
+        echo "[i] Backend sin sudo (captura en iface real ⇒ sudo ./start-desktop.sh)…"
+        setsid nohup backend/venv/bin/python3 -m uvicorn app.main:app \
+          --host 127.0.0.1 --port 8099 --app-dir backend \
+          < /dev/null >> /tmp/sniffnex-desktop.log 2>&1 &
+      fi
+      for i in $(seq 1 40); do
+        curl -s --max-time 2 http://127.0.0.1:8099/api/health | grep -q '\"ok\"' && break
+        sleep 0.5
+      done
+    else
+      echo "[i] Backend ya estaba en marcha — lo reutilizo."
+    fi
+
+    # 2) GUI: SIEMPRE como usuario del escritorio (Chromium root = pantalla negra)
     if [ "$(id -u)" = "0" ]; then
-      # root: lanzamos la GUI como tu usuario del escritorio (setpriv).
-      # Chromium como root renderiza negro bajo X11 de otro usuario — evitamos
-      # el problema de raíz: solo el backend corre con sudo.
       RUID="${SUDO_UID:-$(stat -c %u /home/kali)}"
       RGID="${SUDO_GID:-$(stat -c %g /home/kali)}"
       RHOME="${SUDO_HOME:-/home/kali}"
-      echo "[i] Soy root: abro GUI como uid=$RUID ($(logname 2>/dev/null || echo kali)) y backend con sudo"
       if [ -z "$DISPLAY" ]; then export DISPLAY=:0; fi
-      # setsid --wait: la GUI adopta una sesión nueva y sobrevive al sudo/terminal
+      echo "[i] Abro GUI como uid=$RUID (backend ya corre sudo)"
       exec setpriv --reuid="$RUID" --regid="$RGID" --init-groups \
-        env HOME="$RHOME" DISPLAY="$DISPLAY" \
+        env HOME="$RHOME" DISPLAY="$DISPLAY" XAUTHORITY=/home/kali/.Xauthority \
         setsid --wait \
         desktop/node_modules/.bin/electron desktop "${ELECTRON_FLAGS[@]}"
     else
-      echo "[i] Sin root. Captura en iface real ⇒ sudo ./start-desktop.sh"
       exec desktop/node_modules/.bin/electron desktop "${ELECTRON_FLAGS[@]}"
     fi
     ;;

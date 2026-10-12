@@ -73,38 +73,25 @@ function findPython() {
 }
 
 // ───────────────────── backend: SIEMPRE con sudo si hace falta ───────────────
-// en vivo: para capturar en eth0/wlan0 hace falta root; en lo y upload PCAP no.
-// Arranca con `sudo -n` si no soy root y el binario lo permite (Kali: passwordless).
+// Hay DOS caminos posibles:
+//   A) Si ya hay algo en el puerto (launcher lo arrancó): NO spawn, reutiliza.
+//   B) Si no: el LAUNCHER ya lo arrancó con sudo si aspecto root... si aún así toca
+//      spawn aquí, corre como el usuario actual (cap_net_raw via setcap si aplica).
 function startBackend() {
-  logLine(`[backend] findPython → ${findPython()}`);
+  const py = findPython();
+  logLine(`[backend] findPython → ${py}`);
   const backendDir = resPath("backend");
   const args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(PORT)];
 
-  const spawnFn = (cmdBase, extraEnv = {}) => {
-    logLine(`[backend] ${cmdBase.join(" ")} cwd=${backendDir}`);
-    backendProc = spawn(cmdBase[0], cmdBase.slice(1), {
-      cwd: backendDir,
-      stdio: ["ignore", "ignore", "pipe"],
-      env: { ...process.env, PYTHONUNBUFFERED: "1", DISPLAY: process.env.DISPLAY || "", ...extraEnv },
-    });
-    backendProc.stderr.on("data", (d) => logLine(String(d)));
-    backendProc.on("error", (e) => logLine("[backend] spawn error: " + e.message));
-    backendProc.on("exit", (code) => logLine(`[backend] exited ${code}`));
-  };
-
-  if (typeof process.getuid === "function" && process.getuid() === 0) {
-    spawnFn(["python3", ...args]);  // ya root: directo
-  } else {
-    // usuario normal: probar sudo -n (sin password). Kali tiene NOPASSWD.
-    try {
-      execSync(["sudo", "-n", "-v"].join(" "), { stdio: "ignore" });
-      spawnFn(["sudo", "-n", "-E", findPython(), ...args]);
-      logLine("[backend] spawned con sudo -n");
-    } catch {
-      spawnFn([findPython(), ...args]);
-      logLine("[backend] spawned sin sudo (captura en iface real requerirá setcap)");
-    }
-  }
+  backendProc = spawn(py, args, {
+    cwd: backendDir,
+    stdio: ["ignore", "ignore", "pipe"],
+    env: { ...process.env, PYTHONUNBUFFERED: "1" },
+  });
+  backendProc.stderr.on("data", (d) => logLine(String(d)));
+  backendProc.on("error", (e) => logLine("[backend] spawn error: " + e.message));
+  backendProc.on("exit", (code) => logLine(`[backend] exited ${code}`));
+  logLine("[backend] spawned por Electron (sin sudo: si quieres captura root usa sudo ./start-desktop.sh)");
 }
 
 function waitForBackend(cb, tries = 60) {
