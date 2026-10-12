@@ -8,6 +8,9 @@ const os = require("os");
 const fs = require("fs");
 
 const isPackaged = app.isPackaged;
+// Fondo negro en máquinas virtales / GPUs VM: desactiva GPU accel SIEMPRE en dev
+// (no afecta a la UI React, usa rasterización por CPU fiable).
+app.disableHardwareAcceleration();
 const PORT = process.env.SNIFFNEX_PORT || 8099;
 let backendProc = null;
 let win = null;
@@ -38,6 +41,16 @@ function findPython() {
 }
 
 function startBackend() {
+  // Si ya hay un SniffNex escuchando en el puerto (arranque previo), no re-spawn:
+  // reutilizarlo evita "address already in use" → backend exited 3 → ventana muerta.
+  return new Promise((done) => {
+    http.get(`http://127.0.0.1:${PORT}/api/health`, (r) => {
+      r.resume();
+      if (r.statusCode === 200) { backendProc = null; done(true); }
+      else { done(false); }
+    }).on("error", () => done(false));
+  }).then((alreadyRunning) => {
+    if (alreadyRunning) return;
   const py = findPython();
   const backendDir = resPath("backend");
   const args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(PORT)];
@@ -54,6 +67,7 @@ function startBackend() {
   });
   backendProc.on("exit", (code) => {
     fs.appendFileSync(path.join(os.tmpdir(), "sniffnex-desktop.log"), `backend exited ${code}\n`);
+  });
   });
 }
 
