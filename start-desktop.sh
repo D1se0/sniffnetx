@@ -44,16 +44,16 @@ if [ ! -f frontend/dist/index.html ]; then
   (cd frontend && npm install --silent && npm run build)
 fi
 
-# Electron no arranca como root sin --no-sandbox (crbug.com/638180)
+# Electron no arranca como root sin --no-sandbox (crbug.com/638180), y aun con él
+# en VM/X11 la ventana se ve NEGRA. Solución fiable: la GUI SIEMPRE como el usuario
+# del escritorio — solo el backend (scapy) corre con sudo.
 ELECTRON_FLAGS=("--no-sandbox")
 if [ "$(id -u)" = "0" ]; then
-  ELECTRON_FLAGS+=("--disable-gpu-sandbox" "--disable-setuid-sandbox" "--no-zygote")
   export ELECTRON_DISABLE_SECURITY_WARNINGS=1
-  # HOME válido para el userData de Electron (evita pantalla negra y JS errors)
-  if [ ! -d /root/.config ]; then
-    mkdir -p /root/.config 2>/dev/null || true
-  fi
-  export HOME=/root
+  # Si sudo lo invocó, dispone de orig UID/GID/HOME que main.js usará para "drop"
+  export SUDO_UID="${SUDO_UID:-1000}"
+  export SUDO_GID="${SUDO_GID:-1000}"
+  export SUDO_HOME="${SUDO_HOME:-/home/kali}"
 fi
 
 case "$ACTION" in
@@ -68,13 +68,22 @@ case "$ACTION" in
     ;;
   run)
     echo "[*] Arrancando SniffNex Desktop…"
-    if [ "$(id -u)" != "0" ]; then
+    if [ "$(id -u)" = "0" ]; then
+      # root: lanzamos la GUI como tu usuario del escritorio (setpriv).
+      # Chromium como root renderiza negro bajo X11 de otro usuario — evitamos
+      # el problema de raíz: solo el backend corre con sudo.
+      RUID="${SUDO_UID:-$(stat -c %u /home/kali)}"
+      RGID="${SUDO_GID:-$(stat -c %g /home/kali)}"
+      RHOME="${SUDO_HOME:-/home/kali}"
+      echo "[i] Soy root: abro GUI como uid=$RUID ($(logname 2>/dev/null || echo kali)) y backend con sudo"
+      if [ -z "$DISPLAY" ]; then export DISPLAY=:0; fi
+      exec setpriv --reuid="$RUID" --regid="$RGID" --init-groups \
+        env HOME="$RHOME" DISPLAY="$DISPLAY" \
+        desktop/node_modules/.bin/electron desktop "${ELECTRON_FLAGS[@]}"
+    else
       echo "[i] Sin root. Captura en iface real ⇒ sudo ./start-desktop.sh"
+      exec desktop/node_modules/.bin/electron desktop "${ELECTRON_FLAGS[@]}"
     fi
-    # Nota: si ejecutas el launcher YA con sudo, ELECTRON_FLAGS ya lleva --no-sandbox.
-    # El FATAL puede aparecer una vez si electron fue lanzado la vez anterior SIN flag:
-    # es un crash inmediato y este remedio evita que se repita en este arranque.
-    exec desktop/node_modules/.bin/electron desktop "${ELECTRON_FLAGS[@]}"
     ;;
   *)
     echo "uso: ./start-desktop.sh [run|sudo|build]"; exit 1
