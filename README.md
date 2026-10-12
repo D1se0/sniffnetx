@@ -50,10 +50,22 @@ Todo **filtrable, ordenable y expandible**, con gráficas, animaciones y exporta
 ```bash
 git clone https://github.com/D1se0/sniffnetx.git
 cd sniffnetx/backend
-pip install scapy fastapi "uvicorn[standard]"
+pip install scapy fastapi "uvicorn[standard]" python-multipart reportlab
 cd ..
 sudo ./run.sh          # arranca y abre http://localhost:8099
 ```
+
+## App de escritorio (Electron, portable)
+
+La misma aplicación, en ventana nativa, sin navegador:
+
+```bash
+sudo ./start-desktop.sh          # app de escritorio (crea venv portable en backend/venv)
+./start-desktop.sh build         # genera paquete portable + AppImage en desktop/release/
+```
+
+El launcher crea todas las dependencias en un **venv propio** (`backend/venv`, no toca el sistema),
+arranca el backend como hijo de la app y abre la ventana. Al cerrar la ventana se detiene todo limpiamente.
 
 La interfaz React ya viene **compilada** en `frontend/dist`; si quieres regenerarla:
 
