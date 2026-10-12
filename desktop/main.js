@@ -78,20 +78,34 @@ function findPython() {
 //   B) Si no: el LAUNCHER ya lo arrancó con sudo si aspecto root... si aún así toca
 //      spawn aquí, corre como el usuario actual (cap_net_raw via setcap si aplica).
 function startBackend() {
-  const py = findPython();
-  logLine(`[backend] findPython → ${py}`);
-  const backendDir = resPath("backend");
-  const args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(PORT)];
-
-  backendProc = spawn(py, args, {
-    cwd: backendDir,
-    stdio: ["ignore", "ignore", "pipe"],
-    env: { ...process.env, PYTHONUNBUFFERED: "1" },
+  // A) Si ya hay un backend en el puerto (el launcher lo puso): reutilizar — NO spawn.
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${PORT}/api/health`, (r) => {
+      r.resume();
+      if (r.statusCode === 200) {
+        logLine("[backend] ya en marcha en el puerto — no spawn (reutilizado)");
+        backendProc = null;
+        resolve(true);
+      } else resolve(false);
+    });
+    req.on("error", () => resolve(false));
+    req.setTimeout(1600, () => { req.destroy(); resolve(false); });
+  }).then((already) => {
+    if (already) return;
+    const py = findPython();
+    logLine(`[backend] findPython → ${py}`);
+    const backendDir = resPath("backend");
+    const args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(PORT)];
+    backendProc = spawn(py, args, {
+      cwd: backendDir,
+      stdio: ["ignore", "ignore", "pipe"],
+      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    });
+    backendProc.stderr.on("data", (d) => logLine(String(d)));
+    backendProc.on("error", (e) => logLine("[backend] spawn error: " + e.message));
+    backendProc.on("exit", (code) => logLine(`[backend] exited ${code}`));
+    logLine("[backend] spawned por Electron");
   });
-  backendProc.stderr.on("data", (d) => logLine(String(d)));
-  backendProc.on("error", (e) => logLine("[backend] spawn error: " + e.message));
-  backendProc.on("exit", (code) => logLine(`[backend] exited ${code}`));
-  logLine("[backend] spawned por Electron (sin sudo: si quieres captura root usa sudo ./start-desktop.sh)");
 }
 
 function waitForBackend(cb, tries = 60) {
@@ -107,7 +121,7 @@ function waitForBackend(cb, tries = 60) {
 }
 
 function createWindow() {
-  const win = (win = new BrowserWindow({
+  win = new BrowserWindow({
     width: 1560,
     height: 920,
     minWidth: 1080,
@@ -122,7 +136,7 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: false,
     },
-  }));
+  });
 
   win.webContents.on("did-fail-load", (_e, code, desc, url) => {
     logLine(`did-fail-load(${code}) ${desc} ${url}`);
@@ -146,8 +160,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  startBackend();
-  waitForBackend((err) => {
+  startBackend().then(() => waitForBackend((err) => {
     if (err) {
       dialog.showErrorBox(
         "SniffNex no pudo arrancar el backend",
@@ -157,7 +170,7 @@ app.whenReady().then(() => {
       return;
     }
     createWindow();
-  });
+  }));
   app.on("activate", () => {});
 });
 
