@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity, ArrowDownToLine, FileSearch, Globe, Image, KeyRound, MessageSquare,
-  Network, Play, Radio, Settings2, Square, Terminal
+  Network, Play, Radio, Search, Settings2, Square, ShieldAlert, Terminal, Waypoints
 } from "lucide-react";
 
 import { api } from "./api.js";
@@ -16,9 +16,14 @@ import Sessions from "./views/Sessions.jsx";
 import DNSView from "./views/DNS.jsx";
 import Params from "./views/Params.jsx";
 import PacketExplorer from "./views/PacketExplorer.jsx";
+import NetMap from "./views/NetMap.jsx";
+import Alerts from "./views/Alerts.jsx";
+import SearchPalette from "./views/SearchPalette.jsx";
 
 const SECTIONS = [
   { id: "overview", label: "Overview", icon: Activity, countKey: null },
+  { id: "map", label: "Mapa de red", icon: Waypoints, countKey: null },
+  { id: "alerts", label: "Alertas", icon: ShieldAlert, countKey: "alerts" },
   { id: "hosts", label: "Hosts", icon: Network, countKey: "hosts" },
   { id: "sessions", label: "Sesiones", icon: Radio, countKey: "sessions" },
   { id: "files", label: "Archivos", icon: FileSearch, countKey: "files" },
@@ -35,6 +40,18 @@ export default function App() {
   const [section, setSection] = useState("overview");
   const [selectedHost, setSelectedHost] = useState(null);
   const [lightbox, setLightbox] = useState(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  useEffect(() => {
+    const h = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -55,7 +72,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <Topbar data={data} status={status} />
+      <Topbar data={data} status={status} onSearch={() => setPaletteOpen(true)} />
       <div className="main">
         <aside className="sidebar">
           {SECTIONS.map((s) => {
@@ -83,6 +100,8 @@ export default function App() {
               transition={{ duration: 0.28, ease: [0.2, 0.8, 0.2, 1] }}
             >
               {section === "overview" && <Overview data={data} status={status} go={setSection} />}
+              {section === "map" && <NetMap data={data} />}
+              {section === "alerts" && <Alerts data={data} />}
               {section === "hosts" && <Hosts data={data} selected={selectedHost} setSelected={setSelectedHost} />}
               {section === "sessions" && <Sessions data={data} />}
               {section === "files" && <FilesView data={data} setLightbox={setLightbox} />}
@@ -115,6 +134,8 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      <SearchPalette data={data} open={paletteOpen} onClose={() => setPaletteOpen(false)} go={setSection} />
     </div>
   );
 }

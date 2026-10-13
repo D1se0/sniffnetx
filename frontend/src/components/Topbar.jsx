@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronDown, Download, Loader2, Pause, Play, Wifi, WifiOff } from "lucide-react";
+import { ChevronDown, Download, Loader2, Pause, Play, Search, Wifi, WifiOff } from "lucide-react";
 import { api, download } from "../api.js";
 
-export default function Topbar({ data, status }) {
+export default function Topbar({ data, status, onSearch }) {
   const [ifaces, setIfaces] = useState([]);
   const [iface, setIface] = useState("");
   const [bpf, setBpf] = useState("");
@@ -152,7 +152,10 @@ export default function Topbar({ data, status }) {
         <button className="btn start" onClick={toggle}><Play size={15} /> Iniciar sniffer</button>
       )}
 
-      <div className="statbar">
+      <button className="search-btn" onClick={onSearch} title="Búsqueda global (Ctrl+K)">
+      <Search size={13} /> Buscar… <kbd>Ctrl</kbd><kbd>K</kbd>
+  </button>
+  <div className="statbar">
         <span className="stat-chip"><b>{s.packets || 0}</b> pkts</span>
         <span className="stat-chip"><b>{(data?.hosts || []).length}</b> hosts</span>
         <span className="stat-chip"><b>{(data?.credentials || []).length}</b> creds</span>

@@ -19,6 +19,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from scapy.layers.inet import IP, TCP, UDP, ICMP
+from scapy.layers.l2 import Ether
+
 from .analysis import TrafficAnalyzer
 from .capture import CaptureEngine, export_pcap, load_offline_pcap
 from .report import make_pdf as _make_pdf
@@ -114,6 +117,8 @@ def snapshot(compact: bool = True) -> dict:
             "parameters": analyzer.parameters[-500:][::-1],
             "keywords": analyzer.keyword_hits[-300:][::-1],
             "sessions": _sessions_dict(),
+            "alerts": analyzer.alerts[-150:][::-1],
+            "tls": analyzer.tls_sessions[-200:][::-1],
         }
 
 
@@ -224,7 +229,7 @@ async def api_upload_pcap(file: UploadFile = File(...)):
         parser = TrafficAnalyzer()
         def _prog(n):
             pass
-        n = load_offline_pcap(str(tmp), parser, _prog)
+        n = load_offline_pcap(str(tmp), parser, _prog, engine=engine)
         analyzer = parser
         _State.analyzer = parser
         return {"ok": True, "packets": n, "filename": file.filename}
@@ -354,6 +359,134 @@ def api_packets_recent(limit: int = Query(300, le=2000)):
             summary = "(paquete indescifrable)"
         out.append({"n": base + i, "summary": summary})
     return {"packets": out}
+
+
+# ------------------------------------------------ packet detail + hexdump
+
+def _hexdump(data: bytes, max_bytes: int = 512) -> list[str]:
+    out = []
+    for off in range(0, min(len(data), max_bytes), 16):
+        chunk = data[off:off + 16]
+        hexpart = " ".join(f"{b:02x}" for b in chunk)
+        asciipart = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        out.append(f"{off:04x}  {hexpart:<47}  {asciipart}")
+    if len(data) > max_bytes:
+        out.append(f"… ({len(data)} bytes totales, mostrando {max_bytes})")
+    return out
+
+
+def _layer_dict(layer, depth: int = 0) -> dict | None:
+    """Serializa una capa Scapy en un diccionario plano con los campos clave."""
+    if layer is None or depth > 12:
+        return None
+    cls = layer.__class__.__name__
+    d: dict = {"name": cls, "fields": {}}
+    try:
+        fdesc = layer.fields_desc or []
+        wanted = {f.name for f in fdesc[:14]}
+        for k in wanted:
+            try:
+                v = getattr(layer, k)
+            except Exception:
+                continue
+            if isinstance(v, (bytes, bytearray)):
+                if len(v) > 24:
+                    v = f"[{len(v)} bytes]"
+                else:
+                    v = v.hex()
+            if k in ("options",):
+                continue
+            d["fields"][str(k)] = str(v)
+    except Exception:
+        pass
+    nxt = layer.payload
+    if nxt is not None and depth < 12 and nxt.__class__.__name__ not in ("Raw", "NoPayload", "Padding"):
+        child = _layer_dict(nxt, depth + 1)
+        if child:
+            d["next"] = child
+    return d
+
+
+@app.get("/api/packets/{n}")
+def api_packet_detail(n: int):
+    """Detalle estilo Wireshark del paquete número n (1-based sobre el buffer):
+    árbol de capas + hexdump del payload + resumen. UserRole
+    útil para forense manual."""
+    pkts = engine.get_buffer_pkts()
+    if not pkts or n < 1 or n > len(pkts):
+        raise HTTPException(404, "paquete fuera de rango del buffer")
+    pkt = pkts[n - 1]
+    raw = bytes(pkt)
+    layers = _layer_dict(pkt)
+    proto = "ARP"
+    if pkt.haslayer(IP):
+        if pkt.haslayer(TCP):
+            proto = "TCP"
+        elif pkt.haslayer(UDP):
+            proto = "UDP"
+        elif pkt.haslayer(ICMP):
+            proto = "ICMP"
+    detail = {
+        "n": n,
+        "length": len(raw),
+        "time": datetime.fromtimestamp(float(getattr(pkt, "time", time.time())),
+                                       tz=timezone.utc).isoformat(timespec="seconds"),
+        "summary": pkt.summary(),
+        "proto": proto,
+        "layers": layers,
+        "hexdump": _hexdump(raw, 512),
+    }
+    return detail
+
+
+@app.get("/api/stream")
+def api_stream(src: str, sport: int, dst: str, dport: int, limit: int = Query(400, le=1200)):
+    """Follow-stream TCP: reensambla la conversación de una sesión 4-tupla
+    desde el buffer en vivo: segmentos cliente↔servidor + payload completo
+    por dirección. Al激起 estilo chat."""
+    pkts = engine.get_buffer_pkts()
+    segs = []
+    for idx, p in enumerate(pkts):
+        try:
+            ip = p[IP]
+            tcp = p[TCP]
+        except Exception:
+            continue
+        a = (ip.src, int(tcp.sport), ip.dst, int(tcp.dport))
+        b = (ip.dst, int(tcp.dport), ip.src, int(tcp.sport))
+        if (a != (src, sport, dst, dport)) and (b != (src, sport, dst, dport)):
+            continue
+        payload = bytes(tcp.payload) if tcp.payload else b""
+        if not payload and not (int(tcp.flags) & (0x02 | 0x01 | 0x04)):
+            continue
+        segs.append({
+            "n": idx + 1,
+            "side": "C" if a == (src, sport, dst, dport) else "S",
+            "flags": str(tcp.flags),
+            "seq": int(tcp.seq),
+            "tcp_timestamp": datetime.fromtimestamp(float(getattr(p, "time", time.time())), tz=timezone.utc).isoformat(timespec="seconds")[:19],
+            "len": len(payload),
+            "payload_hex": payload[:96].hex(),
+        })
+        if len(segs) >= limit:
+            break
+    # conversación en texto (payloads concatenados por dirección)
+    text = {"C": [], "S": []}
+    for s in segs:
+        try:
+            raw = bytes.fromhex(s["payload_hex"])
+        except Exception:
+            continue
+        txt = raw.decode("utf-8", errors="replace")
+        text[s["side"]].append(txt)
+    return {
+        "session": f"{src}:{sport} → {dst}:{dport}",
+        "segments": segs,
+        "conversation": {
+            "client_sample": "".join(text["C"])[:8000],
+            "server_sample": "".join(text["S"])[:8000],
+        },
+    }
 
 
 @app.get("/api/health")

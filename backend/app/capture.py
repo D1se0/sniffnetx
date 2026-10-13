@@ -151,14 +151,19 @@ class CaptureEngine:
         return pkts
 
 
-def load_offline_pcap(path: str, analyzer: TrafficAnalyzer, progress_cb=None) -> int:
-    """Lee un .pcap/.pcapng y procesa cada paquete con el analizador."""
+def load_offline_pcap(path: str, analyzer: TrafficAnalyzer, progress_cb=None, engine=None) -> int:
+    """Lee un .pcap/.pcapng y procesa cada paquete con el analizador.
+    Si se pasa engine, además rellena el buffer circular para que el
+    PacketExplorer y el follow-stream funcionen también en modo offline."""
     from scapy.utils import PcapReader
 
     n = 0
     with PcapReader(path) as pr:
         for pkt in pr:
             analyzer.process(pkt)
+            if engine is not None:
+                with engine._lock:
+                    engine.buffer.append(pkt)
             n += 1
             if progress_cb and n % 500 == 0:
                 progress_cb(n)

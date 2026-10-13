@@ -16,7 +16,7 @@ import hashlib
 import threading
 import time
 import zlib
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from typing import Any
 
@@ -160,8 +160,7 @@ class HostInfo:
     __slots__ = ("ip", "mac", "hostname", "domain", "ttl", "ttl_min", "os",
                  "os_guess", "packet_count", "bytes_count", "ports_open",
                  "sent", "recv", "last_seen", "first_seen", "arp", "mdns_names",
-                 "nbns_names", "dns_queries", "keyword_hits", "locally_admin",
-                 "packets_sent_plain", "packets_recv_plain", "notes_quant")
+                 "nbns_names", "dns_queries", "keyword_hits",                 "locally_admin", "packets_sent_plain", "packets_recv_plain", "notes_quant", "tls_names")
 
     def __init__(self, ip):
         self.ip = ip
@@ -188,6 +187,7 @@ class HostInfo:
         self.packets_sent_plain = 0
         self.packets_recv_plain = 0
         self.notes_quant = {}
+        self.tls_names: set[str] = set()
 
     def register_l2(self, mac: str | None, t: float):
         if mac and not self.mac:
@@ -244,6 +244,7 @@ class HostInfo:
             "nbns_names": sorted(self.nbns_names),
             "dns_queries": sorted(self.dns_queries)[:100],
             "keyword_hits": sorted(self.keyword_hits),
+            "tls_names": sorted(self.tls_names)[:30],
         }
 
 
@@ -266,11 +267,17 @@ class TrafficAnalyzer:
         self.dns_queries: list[dict] = []
         self.parameters: list[dict] = []
         self.keyword_hits: list[dict] = []
+        self.tls_sessions: list[dict] = []   # SNI / handshakes TLS visibles
+        self.alerts: list[dict] = []         # amenazas y anomalías (hunting)
+        self._alerts_seq = 0
+        self._scan_tracker: dict[str, dict[str, Any]] = {}   # src -> {ports,t0,dst}
+        self._ip_macs: dict[str, set[str]] = {}   # ip -> MACs vistas (spoofing)
+        self._mac_ips: dict[str, set[str]] = {}   # mac -> IPs anunciadas
         self._keywords: list[str] = [k.lower() for k in (keywords or _DEFAULT_KEYWORDS)]
         self.stats = {
             "packets": 0, "ip_packets": 0, "tcp": 0, "udp": 0, "icmp": 0,
             "arp": 0, "http": 0, "dns": 0, "other_l4": 0, "started": time.time(),
-            "bytes": 0,
+            "bytes": 0, "tls": 0, "alerts": 0,
         }
         # OJO: permite reconstruccion parcial del fichero TCP
         self._tcp_buf: dict[str, dict[str, Any]] = {}
@@ -288,6 +295,145 @@ class TrafficAnalyzer:
             h = HostInfo(ip)
             self.hosts[ip] = h
         return h
+
+    # --------------------------------------------------- hunting / alerts
+    def _add_alert(self, kind: str, severity: str, title: str, detail: str, t: float):
+        """Registra una amenaza/anomalía detectada en la red."""
+        self._alerts_seq += 1
+        self.alerts.append({
+            "id": self._alerts_seq,
+            "kind": kind,
+            "severity": severity,          # critical | high | medium | low | info
+            "title": title,
+            "detail": detail,
+            "ts": datetime.fromtimestamp(t, tz=timezone.utc).isoformat(timespec="seconds"),
+        })
+        self.stats["alerts"] += 1
+        if len(self.alerts) > 300:
+            del self.alerts[:len(self.alerts) - 300]
+
+    def _check_portscan(self, src: str, dst: str, dport: int, t: float):
+        """Detector de escaneo de puertos: N puertos distintos hacia un mismo
+        host en una ventana corta → alerta. Funciona para SYN, UDP, SYN/ACK."""
+        st = self._scan_tracker.setdefault(src, {"ports": deque(), "warned": set()})
+        q = st["ports"]
+        q.append((t, dst, dport))
+        # purga por ventana deslizante (8 s)
+        while q and t - q[0][0] > 8.0:
+            q.popleft()
+        per_dst: dict[str, set[int]] = {}
+        for _t, d, p in q:
+            per_dst.setdefault(d, set()).add(p)
+        for d, ports in per_dst.items():
+            if len(ports) >= 20 and (src, d) not in st["warned"]:
+                st["warned"].add((src, d))
+                sample = ", ".join(str(p) for p in sorted(ports)[:12])
+                self._add_alert(
+                    "portscan", "high",
+                    f"Escaneo de puertos desde {src} contra {d}",
+                    f"{len(ports)} puertos distintos en <8 s (muestra: {sample})",
+                    t)
+
+    def _check_arp_conflict(self, arp, t: float):
+        """ARP spoofing / poisoning: IP anunciada por >1 MAC, o MAC que se
+        apropia de varias IPs del mismo segmento."""
+        ip_str = str(arp.psrc)
+        mac_str = str(arp.hwsrc).upper()
+        self._ip_macs.setdefault(ip_str, set()).add(mac_str)
+        self._mac_ips.setdefault(mac_str, set()).add(ip_str)
+        macs = self._ip_macs[ip_str]
+        if len(macs) > 1:
+            ocurrences = " vs ".join(sorted(macs))
+            self._add_alert(
+                "arp-spoof", "critical",
+                f"Posible ARP spoofing sobre {ip_str}",
+                f"La IP {ip_str} la anuncian {len(macs)} MACs distintas: {ocurrences}",
+                t)
+        ips_ann = self._mac_ips[mac_str]
+        if len(ips_ann) >= 3:
+            self._add_alert(
+                "arp-spoof", "high",
+                f"MAC {mac_str} se anuncia para varias IPs",
+                f"La MAC {mac_str} responde ARP para {len(ips_ann)} IPs: {', '.join(sorted(ips_ann))}",
+                t)
+
+    # ------------------------------------------------------ TLS / SNI
+    @staticmethod
+    def _parse_client_hello(payload: bytes) -> dict | None:
+        """Extrae SNI, versión TLS y número de ciphers de un ClientHello crudo.
+        Heurística tolerante: si el payload empieza con el record 0x16 0x03xx."""
+        try:
+            if len(payload) < 45 or payload[0] != 0x16:
+                return None
+            rec_ver = payload[1:3]
+            # record: type(1) ver(2) len(2) | handshake: type(1) len(3) ver(2) random(32)
+            if payload[5] != 0x01:
+                return None
+            off = 43                     # 5 record + 4 hs head + 32 random
+            sid_len = payload[off]
+            off += 1 + sid_len
+            cs_len = int.from_bytes(payload[off:off + 2], "big")
+            off += 2
+            ciphers_raw = payload[off:off + cs_len]
+            n_ciphers = cs_len // 2
+            ciphers = [ciphers_raw[i:i + 2].hex() for i in range(0, min(cs_len, 24), 2)]
+            off += cs_len
+            comp_len = payload[off]
+            off += 1 + comp_len
+            ext_total = int.from_bytes(payload[off:off + 2], "big")
+            off += 2
+            end = min(off + ext_total, len(payload))
+            sni = ""
+            while off + 4 <= end:
+                ext_type = int.from_bytes(payload[off:off + 2], "big")
+                ext_len = int.from_bytes(payload[off + 2:off + 4], "big")
+                body = payload[off + 4:off + 4 + ext_len]
+                if ext_type == 0x0000 and len(body) >= 5:
+                    slen = int.from_bytes(body[3:5], "big")
+                    sni = body[5:5 + slen].decode("ascii", "ignore")
+                    break
+                off += 4 + ext_len
+            return {
+                "record_version": rec_ver.hex(),
+                "sni": sni,
+                "ciphers_n": n_ciphers,
+                "ciphers_sample": ciphers,
+            }
+        except Exception:
+            return None
+
+    def _process_tls(self, payload: bytes, src, dst, sport, dport, t: float):
+        if not payload:
+            return
+        rec = self._parse_client_hello(payload if dport in (443, 8443) else b"")
+        if rec is None and sport in (443, 8443):
+            rec = self._parse_client_hello(payload)
+        if rec is None:
+            return
+        self.stats["tls"] += 1
+        sni = rec.get("sni", "")
+        entry = {
+            "type": "client-hello",
+            "src": src, "dst": dst, "sport": sport, "dport": dport,
+            "sni": sni,
+            "tls_version": rec.get("record_version", ""),
+            "ciphers_n": rec.get("ciphers_n", 0),
+            "ciphers_sample": rec.get("ciphers_sample", []),
+            "ts": datetime.fromtimestamp(t, tz=timezone.utc).isoformat(timespec="seconds"),
+        }
+        self.tls_sessions.append(entry)
+        if len(self.tls_sessions) > 300:
+            del self.tls_sessions[:len(self.tls_sessions) - 300]
+        if sni:
+            self._host(src).tls_names.add(sni)
+            self._host(dst).tls_names.add(sni)
+            # hunting: SNI con patrones habituales de phishing/tracking
+            low = sni.lower()
+            if low.endswith(".tk") or low.endswith(".top") or low.endswith(".xyz") or low.endswith(".ru") or "login-" in low or "secure-" in low:
+                self._add_alert("tls-sni", "medium",
+                                f"SNI sospechoso: {sni}",
+                                f"Dominio TLS hacia {dst} con patrón habitual de phishing/trackers",
+                                t)
 
     # ------------------------------------------------------------- Ficheros
     def _register_file(self, size, filename, ct, src, dst, kind, data: bytes | None):
@@ -327,6 +473,7 @@ class TrafficAnalyzer:
                     h = self._host(arp.psrc)
                     h.register_l2(arp.hwsrc, t)
                     h.arp = True
+                    self._check_arp_conflict(arp, t)
                     return
 
             if pkt.haslayer(IP):
@@ -383,6 +530,10 @@ class TrafficAnalyzer:
         elif flags & 0x01:
             ses.state = "FIN_WAIT"
 
+        # hunting: SYN abierto (escaneo) —track por (src,dst,dport) en ventana
+        if flags & 0x02:
+            self._check_portscan(src, dst, dport, t)
+
         payload = bytes(tcp.payload) if tcp.payload else b""
         if not payload:
             return
@@ -393,6 +544,8 @@ class TrafficAnalyzer:
             return
 
         self._scan_blob(payload, src, dst, sport, dport, ses.service, t)
+        if dport in (443, 8443) or sport in (443, 8443):
+            self._process_tls(payload, src, dst, sport, dport, t)
 
     # ------------------------------------------------------------- HTTP
     def _process_http(self, pkt: Packet, ses: TCPSession, src, dst, hs, hd, t: float):
