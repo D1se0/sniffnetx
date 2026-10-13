@@ -9,6 +9,12 @@
 //     (--no-sandbox funciona pero en VM X11 igual se ve negro);
 //   - el BACKEND se lanza aparte con `sudo -n` solo para capturar.
 const { app, BrowserWindow, shell, dialog } = require("electron");
+
+// VM/X11: la GPU virtual falla (vaInitialize) y al cambiar de sección el
+// compositor deja las capas sin repintar → contenido EN NEGRO. Software puro:
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch("disable-gpu-compositing");
+app.commandLine.appendSwitch("use-angle", "swiftshader");
 const { spawn, execSync } = require("child_process");
 const path = require("path");
 const http = require("http");
