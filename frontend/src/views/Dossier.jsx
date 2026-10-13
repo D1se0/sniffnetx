@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FileClock, Loader2, X, Plus, Trash2, StickyNote } from "lucide-react";
 
 const KIND_META = {
@@ -31,7 +31,10 @@ export default function Dossier({ ip, onClose }) {
       setBusy(false);
     }
   };
-  if (busy && !d && !err) load();
+  // la carga del dossier vive en un efecto, NUNCA en el cuerpo del render:
+  // setState durante el render mete el componente en el bucle de updates de
+  // fase de render (React #301) y desmonta todo el árbol sin error visible.
+  useEffect(() => { load(); }, [ip]);
 
   const addNote = async () => {
     if (!text.trim()) return;

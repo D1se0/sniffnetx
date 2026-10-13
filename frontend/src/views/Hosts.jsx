@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { Search } from "lucide-react";
+import { useFlipSort } from "../useFlip.js";
 
 function sortRows(rows, key, dir) {
   const r = [...rows].sort((a, b) => {
@@ -30,6 +31,9 @@ export default function Hosts({ data, selected, setSelected, openDossier }) {
     if (onlyMac) list = list.filter((h) => h.mac);
     return sortRows(list, sortKey, dir);
   }, [data?.hosts, q, sortKey, dir, onlyArp, onlyMac]);
+
+  // animación FLIP al reordenar/filtrar las filas
+  const flip = useFlipSort([rows]);
 
   const clickSort = (k) => {
     if (k === sortKey) setDir(dir === "asc" ? "desc" : "asc");
@@ -86,10 +90,12 @@ export default function Hosts({ data, selected, setSelected, openDossier }) {
                 {rows.map((h) => (
                   <React.Fragment key={h.ip}>
                     {/* tr plano: sin framer-motion/layout — en VM sin GPU las
-                        capas de animación de layout congelan el compositor */}
+                        capas de animación de layout congelan el compositor;
+                        el orden se anima con FLIP (useFlipSort) */}
                     <tr
                       className="rowlink"
                       onClick={() => setSelected(selected === h.ip ? null : h.ip)}
+                      ref={(el) => { if (el) flip.current.set(h.ip, el); else flip.current.delete(h.ip); }}
                     >
                       <td className="mono" style={{ color: "var(--accent)" }}>{h.ip}</td>
                       <td className="mono">{h.mac || "—"}</td>
