@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from .analysis import TrafficAnalyzer
 from .capture import CaptureEngine, export_pcap, load_offline_pcap
+from .report import make_pdf as _make_pdf
 
 app = FastAPI(title="SniffNex API", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -286,10 +287,16 @@ def api_export(what: str, fmt: str):
         raise HTTPException(404, f"seccion desconocida: {what}")
     sections = [what] if what != "all" else ["hosts", "files", "messages", "credentials", "dns", "parameters", "keywords", "sessions"]
     if fmt == "json":
-        data = {s: snap[s] for s in sections}
+        data = {"_meta": {
+                    "tool": "SniffNex", "version": "1.0.0",
+                    "generated": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+                    "stats": snap.get("stats", {}), "sections": sections,
+                },
+                **{s: snap[s] for s in sections}}
         return JSONResponse(data, headers={"Content-Disposition": "attachment; filename=sniffnex_export.json"})
     if fmt == "csv":
-        buf = io.StringIO()
+        # BOM UTF-8 para que Excel/Sheets detecten la codificación y las tildes
+        buf = io.StringIO(newline="")
         w = csv.writer(buf)
         for s in sections:
             w.writerow([f"# {s.upper()}"])
@@ -305,230 +312,15 @@ def api_export(what: str, fmt: str):
                 for r in rows:
                     w.writerow([str(r.get(k, "")) for k in keys])
             w.writerow([])
-        return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
-                                 headers={"Content-Disposition": f"attachment; filename=sniffnex_{what}.csv"})
+        csv_data = "\ufeff" + buf.getvalue()
+        return StreamingResponse(iter([csv_data]), media_type="text/csv; charset=utf-8",
+                                 headers={"Content-Disposition": f"attachment; filename=sniffnex_{what}_{datetime.now(tz=timezone.utc).strftime('%Y%m%d_%H%M')}.csv"})
     if fmt == "pdf":
         pdf = _make_pdf(sections, snap)
+        stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M")
         return StreamingResponse(iter([pdf]), media_type="application/pdf",
-                                 headers={"Content-Disposition": f"attachment; filename=sniffnex_report.pdf"})
+                                 headers={"Content-Disposition": f"attachment; filename=sniffnex_report_{stamp}.pdf"})
     raise HTTPException(400, "formato desconocido")
-
-
-def _make_pdf(sections, snap: dict) -> bytes:
-    """Genera un PDF 100% porcodigo conschrift con tablas por seccion."""
-    import zlib
-
-    PAGE_W, PAGE_H = 842, 595      # A4 landscape puntos
-
-    def esc(t: str) -> str:
-        return (t.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
-                .encode("latin-1", "replace").decode("latin-1"))
-
-    def wrap(s: str, n: int) -> str:
-        words = str(s).split()
-        if not words:
-            return ""
-        out = words[0][: n]
-        line = out
-        for wd in words[1:]:
-            if len(line) + 1 + len(wd) <= n:
-                line += " " + wd
-            else:
-                out += "\n" + wd[: n]
-                line = wd
-        return out
-
-    streams = []
-
-    def start_page(title: str):
-        cmds = ["BT /F2 20 Tf 1 0 0 1 40 548 Tm", f"({esc(title)}) Tj", "ET"]
-        cmds += _toc.setColor   # placeholder removed below
-        return None  # never used
-
-    class _Page:
-        def __init__(self):
-            self.parts: list[str] = []
-            self.y = 545
-
-        def title(self, s: str):
-            self.parts.append(f"BT /F2 18 Tf 1 0 0 1 40 {self.y} Tm ({esc(s)}) Tj ET")
-            self.y -= 34
-
-        def text(self, s: str, font="F1", size=8.5, indent=40, lead=None):
-            for line in s.split("\n"):
-                if self.y < 40:
-                    return False
-                self.parts.append(f"BT /{font} {size} Tf 1 0 0 1 {indent} {self.y} Tm ({esc(line)}) Tj ET")
-                self.y -= (lead or (size + 3))
-            return True
-
-        def table(self, headers, rows, widths, size=7.2):
-            x = 40
-            # cabecera
-            self.parts.append("0.13 0.16 0.18 rg 40 40 q")
-            self.parts.append("Q")
-            cx = 40
-            for i, hcell in enumerate(headers):
-                self.parts.append(f"BT /F2 8 Tf 1 0 0 1 {cx} {self.y} Tm ({esc(hcell)}) Tj ET")
-                cx += widths[i]
-            self.y -= 16
-            for r in rows:
-                if self.y < 34:
-                    return False
-                cx = 40
-                for i, cell in enumerate(r):
-                    for ln in wrap(cell, int(widths[i] / (size * 0.5))).split("\n"):
-                        if self.y < 34:
-                            break
-                        self.parts.append(f"BT /F1 {size} Tf 1 0 0 1 {cx} {self.y} Tm ({esc(ln)}) Tj ET")
-                        self.y -= (size + 2)
-                    self.y -= 2
-                    cx += widths[i]
-                self.y -= 8
-                # línea
-                self.parts.append(f"0.8 G 40 {self.y} m 802 {self.y} l S")
-                self.y -= 2
-            return True
-
-        def footer(self, n: int):
-            self.parts.append(f"BT /F1 8 Tf 1 0 0 1 40 20 Tm (SniffNex  |  pagina {n}  |  generado {datetime.now(tz=timezone.utc).isoformat(timespec='seconds')}) Tj ET")
-
-    pages: list[_Page] = []
-    cur = _Page()
-    pages.append(cur)
-
-    def new_if_needed():
-        nonlocal cur
-        if cur.y < 120:
-            cur = _Page()
-            pages.append(cur)
-
-    st = snap.get("stats", {})
-    if cur.text(f"SniffNex Network Forensics Report", "F2", 22):
-        pass
-    cur.y -= 10
-    gen = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
-    cur.text(f"Generado: {gen}   |   Paquetes: {st.get('packets', 0)}   TCP: {st.get('tcp', 0)}   UDP: {st.get('udp', 0)}   ARP: {st.get('arp', 0)}   HTTP: {st.get('http', 0)}   DNS: {st.get('dns', 0)}", "F1", 9.5)
-    cur.y -= 14
-
-    LIMITS = {"hosts": 60, "files": 40, "messages": 40, "credentials": 40, "dns": 60, "parameters": 60, "keywords": 40, "sessions": 60}
-
-    def add_section(name: str):
-        nonlocal cur
-        if name not in sections:
-            return
-        rows_src = snap.get(name, [])
-        new_if_needed()
-        cur.title(SECTIONS_TITLES.get(name, name))
-        if not rows_src:
-            cur.text("(sin datos capturados)", "F1", 9)
-            return
-        if name == "hosts":
-            headers3 = ["IP", "MAC", "Fabricante", "Hostname", "SO estimado", "TTLm", "Enviados", "Recibidos", "Bytes", "Puertos abiertos"]
-            widths = [90, 105, 80, 90, 110, 32, 52, 52, 52, 87]
-            rows = [[h["ip"], h["mac"], h["nic_vendor"], (h["hostname"] or "-")[:16], str(h["os_guess"])[:20], h["ttl_min"], h["sent"], h["recv"], h["bytes_count"], ",".join(str(p) for p in h["ports_open"][:16])] for h in rows_src[:LIMITS["hosts"]]]
-            cur.table(headers3, rows, widths, size=7.0)
-        elif name == "sessions":
-            hs = ["Origen", "Dest", "Servicio", "Estado", "Pkt", "Bytes", "Inicio"]
-            ws = [120, 120, 80, 90, 40, 70, 130]
-            rows = [[s["src"] + ":" + str(s["sport"]), s["dst"] + ":" + str(s["dport"]), s["service"], s["state"], s["packets"], s["bytes"], s["start"][11:19]] for s in rows_src[:LIMITS["sessions"]]]
-            cur.table(hs, rows, ws)
-        elif name == "files":
-            hs = ["Fichero", "MIME", "Tamano", "Origen", "Destino", "Hora"]
-            ws = [180, 130, 60, 110, 110, 100]
-            rows = [[f["filename"][:28], (f.get(        "mime" if f.get("mime") else "mime") or f.get("content_type", ""))[:24], f["size"], f.get("src", ""), f.get("dst", ""), f.get("ts", "")[11:19]] for f in rows_src[:LIMITS["files"]]]
-            cur.table(hs, rows, ws)
-        elif name == "credentials":
-            hs = ["Tipo", "Usuario", "Password", "Dominio/Puerto", "Origen", "Hora"]
-            ws = [110, 110, 130, 110, 110, 90]
-            rows = [[c["type"], (c.get("user") or "-")[:24], (c.get("password") or c.get("hash") or "-")[:26], (c.get("domain") or str(c.get("port") or ""))[:22], c.get("src", ""), c.get("ts", "")[11:19]] for c in rows_src[:LIMITS["credentials"]]]
-            cur.table(hs, rows, ws)
-        elif name == "dns":
-            hs = ["Hora", "Consultor", "Servidor", "Tipo", "Dominio", "Respuesta"]
-            ws = [60, 100, 100, 50, 180, 190]
-            rows = []
-            for d in rows_src[:LIMITS["dns"]]:
-                for q in d.get("questions", []) or [{}]:
-                    answ = "; ".join(a["data"] or a["type"] for a in d.get("answers", [])[:3])
-                    host, srv = (d["src"], d["dst"]) if not d["is_response"] else (d["dst"], d["src"])
-                    rows.append([d.get("ts", "")[11:19], host, srv, q.get("type", ""), (q.get("name") or "")[:34], answ[:34]])
-            if rows:
-                cur.table(hs, rows, ws)
-        elif name == "messages":
-            hs = ["Tipo", "Origen", "Destino", "Detalle"]
-            ws = [90, 110, 110, 430]
-            rows = [[m.get("type", ""), m.get("src", ""), m.get("dst", ""), (m.get("method", "") + " " + (m.get("path", "") or m.get("subject", "") or (m.get("body", "") or "")[:60]))[:80]] for m in rows_src[:LIMITS["messages"]]]
-            cur.table(hs, rows, ws)
-        elif name == "parameters":
-            hs = ["Param", "Valor", "Contexto", "Origen", "Hora"]
-            ws = [110, 180, 130, 120, 70]
-            rows = [[p.get("key", ""), str(p.get("value", ""))[:36], p.get("kind", ""), p.get("src", ""), p.get("ts", "")[11:19]] for p in rows_src[:LIMITS["parameters"]]]
-            cur.table(hs, rows, ws)
-        elif name == "keywords":
-            hs = ["Keyword", "Servicio", "Origen", "Destino", "Contexto"]
-            ws = [80, 80, 100, 100, 380]
-            rows = [[k.get("keyword", ""), k.get("service", ""), k.get("src", ""), k.get("dst", ""), (k.get("context", "") or "")[:70]] for k in rows_src[:LIMITS["keywords"]]]
-            cur.table(hs, rows, ws)
-
-    for sec in sections:
-        add_section(sec)
-
-    # pie con numeros de pagina
-    for i, pg in enumerate(pages, 1):
-        pg.footer(i)
-
-    # ---- ensamblado PDF
-    def _as_pdf(pages: list[_Page]) -> bytes:
-        objs: list[bytes] = []
-
-        def add(b: bytes) -> int:
-            objs.append(b)
-            return len(objs)
-
-        cat_id = add(b"<< /Type /Catalog /Pages 3 0 R >>")
-        font1 = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
-        font2 = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>")
-        kids = []
-        page_ids = []
-        for pg in pages:
-            content = "\n".join(pg.parts).encode("latin-1", "ignore")
-            comp = zlib.compress(content)
-            c_id = add(b"<< /Length " + str(len(comp)).encode() + b" /Filter /FlateDecode >>\nstream\n" + comp + b"\nendstream")
-            p_id = add(("<< /Type /Page /Parent 3 0 R /MediaBox [0 0 %d %d] /Resources << /Font << /F1 %d 0 R /F2 %d 0 R >> >> /Contents %d 0 R >>" % (PAGE_W, PAGE_H, font1, font2, c_id)).encode())
-            page_ids.append(p_id)
-            kids.append(f"{p_id} 0 R")
-        pages_obj_id = 3  # reservado
-        kids_str = " ".join(kids)
-        objs[2] = (f"<< /Type /Pages /Count {len(page_ids)} /Kids [{kids_str}] >>").encode()
-        info = add(b"<< /Producer (SniffNex) /Title (SniffNex Network Forensics Report) >>")
-        tot = len(objs)
-        buf = io.BytesIO()
-        buf.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
-        offsets = [0]
-        for i, o in enumerate(objs, 1):
-            offsets.append(buf.tell())
-            buf.write(f"{i} 0 obj\n".encode() + o + b"\nendobj\n")
-        xref = buf.tell()
-        buf.write(f"xref\n0 {tot + 1}\n".encode())
-        buf.write(b"0000000000 65535 f \n")
-        for off in offsets[1:]:
-            buf.write(("%010d 00000 n \n" % off).encode())
-        buf.write(f"trailer\n<< /Size {tot + 1} /Root {cat_id} 0 R /Info {info} 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
-        return buf.getvalue()
-
-    return _as_pdf(pages)
-
-
-SECTIONS_TITLES = {
-    "hosts": "Hosts detectados en la red",
-    "files": "Ficheros reconstruidos",
-    "messages": "Mensajes obtenidos de la red",
-    "credentials": "Credenciales detectadas",
-    "dns": "Consultas DNS",
-    "parameters": "Parametros y keywords",
-    "keywords": "Keywords detectadas",
-    "sessions": "Sesiones TCP/UDP",
-}
 
 
 @app.websocket("/ws")
