@@ -19,6 +19,10 @@ EOF
 }
 banner
 
+# ---------- LOG: uno por identidad (el kernel con fs.protected_regular=2
+# impide que root haga append a un fichero creado por kali en /tmp y viceversa) ----------
+LOG_FILE="/tmp/sniffnex-desktop-$(id -u).log"
+
 # ---------- venv del repo (no toca el sistema) ----------
 if [ ! -x backend/venv/bin/python3 ]; then
   echo "[*] Creando venv en backend/venv (portable, no toca el sistema)…"
@@ -85,19 +89,36 @@ case "$ACTION" in
         echo "[i] Backend en marcha con sudo (captura en ifaces reales OK)…"
         setsid nohup backend/venv/bin/python3 -m uvicorn app.main:app \
           --host 127.0.0.1 --port 8099 --app-dir backend \
-          < /dev/null >> /tmp/sniffnex-desktop.log 2>&1 &
+          < /dev/null >> "$LOG_FILE" 2>&1 &
       else
         echo "[i] Backend sin sudo (captura en iface real ⇒ sudo ./start-desktop.sh)…"
         setsid nohup backend/venv/bin/python3 -m uvicorn app.main:app \
           --host 127.0.0.1 --port 8099 --app-dir backend \
-          < /dev/null >> /tmp/sniffnex-desktop.log 2>&1 &
+          < /dev/null >> "$LOG_FILE" 2>&1 &
       fi
       for i in $(seq 1 40); do
         curl -s --max-time 2 http://127.0.0.1:8099/api/health | grep -q '\"ok\"' && break
         sleep 0.5
       done
     else
-      echo "[i] Backend ya estaba en marcha — lo reutilizo."
+      # Reutilizo SOLO si el backend existente puede capturar. Si era una
+      # instancia sin sudo (sin CAP_NET_RAW) y yo arranco con sudo, la
+      # sustituyo por una con permisos — si no, "Iniciar sniffer" falla.
+      CAN=$(curl -s --max-time 2 http://127.0.0.1:8099/api/can-capture | grep -o '\"can\":\(true\|false\)' | grep -o '\(true\|false\)')
+      if [ "$CAN" = "false" ] && [ "$(id -u)" = "0" ]; then
+        echo "[!] Backend en marcha SIN permisos de captura — lo sustituyo por uno con sudo…"
+        pkill -f "uvicorn app.main:app" 2>/dev/null
+        sleep 1.5
+        setsid nohup backend/venv/bin/python3 -m uvicorn app.main:app \
+          --host 127.0.0.1 --port 8099 --app-dir backend \
+          < /dev/null >> "$LOG_FILE" 2>&1 &
+        for i in $(seq 1 40); do
+          curl -s --max-time 2 http://127.0.0.1:8099/api/health | grep -q '\"ok\"' && break
+          sleep 0.5
+        done
+      else
+        echo "[i] Backend ya estaba en marcha — lo reutilizo."
+      fi
     fi
 
     # 2) GUI: SIEMPRE como usuario del escritorio (Chromium root = pantalla negra)
