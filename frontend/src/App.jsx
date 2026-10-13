@@ -98,14 +98,9 @@ export default function App() {
           })}
         </aside>
         <main className="content">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={section}
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.28, ease: [0.2, 0.8, 0.2, 1] }}
-            >
+          {/* swap directo: AnimatePresence/motion genera capas de composición
+              que esta VM sin GPU real deja en negro tras el primer cambio */}
+          <div>
               {section === "overview" && <Overview data={data} status={status} go={setSection} />}
               {section === "map" && <NetMap data={data} openDossier={openDossier} />}
               {section === "alerts" && <Alerts data={data} />}
@@ -119,8 +114,7 @@ export default function App() {
               {section === "dns" && <DNSView data={data} />}
               {section === "params" && <Params data={data} />}
               {section === "packets" && <PacketExplorer status={status} />}
-            </motion.div>
-          </AnimatePresence>
+            </div>
         </main>
       </div>
 

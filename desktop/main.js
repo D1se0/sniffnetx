@@ -13,17 +13,16 @@ const { app, BrowserWindow, shell, dialog } = require("electron");
 // VM/X11: la GPU virtual falla (vaInitialize) y al cambiar de sección el
 // compositor deja las capas sin repintar → contenido EN NEGRO. Software puro:
 app.disableHardwareAcceleration();
+app.commandLine.appendSwitch("disable-gpu");
 app.commandLine.appendSwitch("disable-gpu-compositing");
-app.commandLine.appendSwitch("use-angle", "swiftshader");
 const { spawn, execSync } = require("child_process");
 const path = require("path");
 const http = require("http");
 const os = require("os");
 const fs = require("fs");
 
-app.disableHardwareAcceleration();
 
-// ───────────────── нами root-drop: se re-ejecuta como usuario normal ──────────
+// ───────────── root-drop: se re-ejecuta como usuario normal ─────────────
 function dropToDesktopUser() {
   if (typeof process.getuid !== "function" || process.getuid() !== 0) return; // no root: seguir
   const SUDO_UID = parseInt(process.env.SUDO_UID || "", 10);

@@ -1,6 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { ChevronDown, Search } from "lucide-react";
+import { Search } from "lucide-react";
 
 function sortRows(rows, key, dir) {
   const r = [...rows].sort((a, b) => {
@@ -86,10 +85,11 @@ export default function Hosts({ data, selected, setSelected, openDossier }) {
               <tbody>
                 {rows.map((h) => (
                   <React.Fragment key={h.ip}>
-                    <motion.tr
+                    {/* tr plano: sin framer-motion/layout — en VM sin GPU las
+                        capas de animación de layout congelan el compositor */}
+                    <tr
                       className="rowlink"
                       onClick={() => setSelected(selected === h.ip ? null : h.ip)}
-                      layout
                     >
                       <td className="mono" style={{ color: "var(--accent)" }}>{h.ip}</td>
                       <td className="mono">{h.mac || "—"}</td>
@@ -109,19 +109,14 @@ export default function Hosts({ data, selected, setSelected, openDossier }) {
                           </button>
                         )}
                       </td>
-                    </motion.tr>
-                    <AnimatePresence>
-                      {selected === h.ip && (
-                        <tr key="detail">
-                          <td colSpan={cols.length + 1} style={{ padding: 0, borderBottom: "none" }}>
-                            <motion.div
-                              className="host-detail"
-                              initial={{ opacity: 0, height: 0 }}
-                              animate={{ opacity: 1, height: "auto" }}
-                              exit={{ opacity: 0, height: 0 }}
-                              transition={{ duration: 0.25, ease: [0.2, 0.8, 0.2, 1] }}
-                              style={{ overflow: "hidden", margin: 10 }}
-                            >
+                    </tr>
+                    {selected === h.ip && (
+                      <tr>
+                        <td colSpan={cols.length + 1} style={{ padding: 0, borderBottom: "none" }}>
+                          <div
+                            className="host-detail"
+                            style={{ overflow: "hidden", margin: 10 }}
+                          >
                               <div style={{ padding: 14 }}>
                                 <div className="att-grid" style={{ marginBottom: 12 }}>
                                   <Att k="IP" v={h.ip} />
@@ -156,12 +151,11 @@ export default function Hosts({ data, selected, setSelected, openDossier }) {
                                       : <span className="dim mono" style={{ fontSize: 11.5 }}>— sin keywords —</span>}
                                   </div>
                                 </div>
-                              </div>
-                            </motion.div>
-                          </td>
-                        </tr>
-                      )}
-                    </AnimatePresence>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
                   </React.Fragment>
                 ))}
               </tbody>
@@ -169,16 +163,15 @@ export default function Hosts({ data, selected, setSelected, openDossier }) {
           </div>
         )}
       </div>
-      <ChevronDown size={0} style={{ display: "none" }} />
     </div>
   );
 }
 
 function Att({ k, v }) {
   return (
-    <motion.div className="att" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3 }}>
+    <div className="att">
       <div className="k">{k}</div>
       <div className="v">{String(v)}</div>
-    </motion.div>
+    </div>
   );
 }
