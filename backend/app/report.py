@@ -35,7 +35,8 @@ MARGIN = 42
 CONTENT_W = PAGE_W - 2 * MARGIN
 
 LIMITS = {"hosts": 80, "files": 60, "messages": 60, "credentials": 60,
-          "dns": 80, "parameters": 80, "keywords": 60, "sessions": 80}
+          "dns": 80, "parameters": 80, "keywords": 60, "sessions": 80,
+          "beacons": 40, "notes": 40}
 
 SECTIONS_TITLES = {
     "hosts": "Hosts detectados en la red",
@@ -46,6 +47,8 @@ SECTIONS_TITLES = {
     "parameters": "Parámetros capturados",
     "keywords": "Keywords sensibles detectadas",
     "sessions": "Sesiones TCP/UDP",
+    "beacons": "Beacons detectados (patrón C2)",
+    "notes": "Notas del analista",
 }
 
 
@@ -553,6 +556,25 @@ def _build(c, ctx):
             doc.table(hs, rows, ws, size=7.6, mono=(0, 1),
                       color_rules=lambda r: (None, "#f87171"))
 
+        elif name == "beacons":
+            hs = ["Origen", "Destino", "Servicio", "Conex.", "Intervalo", "Regularidad"]
+            ws = [108, 108, 100, 80, 120, 262]
+            rows = [[b.get("src", ""), b.get("dst", ""), b.get("service", ""),
+                     str(b.get("count", 0)), f"{b.get('mean_s', 0)} s",
+                     f"{b.get('regularity', 0)} %"]
+                    for b in rows_src[:lim]]
+            doc.table(hs, rows, ws, size=7.8, mono=(0, 1),
+                      color_rules=lambda r: (None, "#fbbf24"))
+
+        elif name == "notes":
+            hs = ["Objetivo", "Etiqueta", "Nota", "Hora"]
+            ws = [170, 110, 380, 158]
+            rows = [[n.get("target", ""), n.get("tag", ""), _clean(n.get("text", ""))[:96],
+                     (n.get("ts", "") or "")[11:19]]
+                    for n in rows_src[:lim]]
+            doc.table(hs, rows, ws, size=7.8, mono=(0, 3),
+                      color_rules=lambda r: (None, "#4ade80"))
+
         if len(rows_src) > shown:
             doc.need(18)
             doc.c.setFillColor(MUTED)
@@ -560,6 +582,10 @@ def _build(c, ctx):
             doc.c.drawString(MARGIN, doc.y - 2,
                              f"… {len(rows_src) - shown} registros más disponibles en la exportación completa (JSON/CSV).")
             doc.y -= 14
+
+    # commitear la última página dibujada: _FooterCanvas guarda el estado en
+    # cada showPage y al restaurar el primero machacaría la página en curso
+    c.showPage()
 
 
 # --------------------------------------------------------------------------

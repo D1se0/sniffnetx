@@ -18,6 +18,7 @@ export default function DNSView({ data }) {
   }, [data?.dns, q]);
 
   const mainName = (d) => d.questions?.[0]?.name || "—";
+  const susp = new Set((data?.dns_susp || []).map((e) => e.name));
   const mainType = (d) => d.questions?.[0]?.type || "—";
   const answersTxt = (d) => (d.answers || []).map((a) => `${a.type}=${a.data || "?"}`).join(" · ") || "—";
 
@@ -53,6 +54,7 @@ export default function DNSView({ data }) {
                         <span className={`badge ${d.is_response ? "c-green" : "c-cyan"}`}>
                           {d.is_response ? `RESP ${mainType(d)}` : `QRY ${mainType(d)}`}
                         </span>
+                        {susp.has(mainName(d)) && <span className="badge c-red" title="Dominio con patrones de túnel DNS">⚠ túnel</span>}
                       </td>
                       <td className="mono" style={{ color: "var(--accent)" }}>{mainName(d)}</td>
                       <td className="mono" style={{ fontSize: 11 }}>

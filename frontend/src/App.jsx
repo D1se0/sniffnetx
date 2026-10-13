@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  Activity, ArrowDownToLine, FileSearch, Globe, Image, KeyRound, MessageSquare,
-  Network, Play, Radio, Search, Settings2, Square, ShieldAlert, Terminal, Waypoints
+  Activity, ArrowDownToLine, FileSearch, Globe, Image, KeyRound, LayoutGrid, MessageSquare,
+  Network, Play, Radio, Search, Settings2, Square, ShieldAlert, Terminal, Waypoints, Radar
 } from "lucide-react";
 
 import { api } from "./api.js";
@@ -19,11 +19,16 @@ import PacketExplorer from "./views/PacketExplorer.jsx";
 import NetMap from "./views/NetMap.jsx";
 import Alerts from "./views/Alerts.jsx";
 import SearchPalette from "./views/SearchPalette.jsx";
+import Beacons from "./views/Beacons.jsx";
+import Matrix from "./views/Matrix.jsx";
+import Dossier from "./views/Dossier.jsx";
 
 const SECTIONS = [
   { id: "overview", label: "Overview", icon: Activity, countKey: null },
   { id: "map", label: "Mapa de red", icon: Waypoints, countKey: null },
   { id: "alerts", label: "Alertas", icon: ShieldAlert, countKey: "alerts" },
+  { id: "beacons", label: "Beacons C2", icon: Radar, countKey: "beacons" },
+  { id: "matrix", label: "Matriz", icon: LayoutGrid, countKey: null },
   { id: "hosts", label: "Hosts", icon: Network, countKey: "hosts" },
   { id: "sessions", label: "Sesiones", icon: Radio, countKey: "sessions" },
   { id: "files", label: "Archivos", icon: FileSearch, countKey: "files" },
@@ -41,6 +46,8 @@ export default function App() {
   const [selectedHost, setSelectedHost] = useState(null);
   const [lightbox, setLightbox] = useState(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [dossierIp, setDossierIp] = useState(null);
+  const openDossier = useCallback((ip) => setDossierIp(ip), []);
 
   useEffect(() => {
     const h = (e) => {
@@ -100,9 +107,11 @@ export default function App() {
               transition={{ duration: 0.28, ease: [0.2, 0.8, 0.2, 1] }}
             >
               {section === "overview" && <Overview data={data} status={status} go={setSection} />}
-              {section === "map" && <NetMap data={data} />}
+              {section === "map" && <NetMap data={data} openDossier={openDossier} />}
               {section === "alerts" && <Alerts data={data} />}
-              {section === "hosts" && <Hosts data={data} selected={selectedHost} setSelected={setSelectedHost} />}
+              {section === "beacons" && <Beacons data={data} />}
+              {section === "matrix" && <Matrix data={data} />}
+              {section === "hosts" && <Hosts data={data} selected={selectedHost} setSelected={setSelectedHost} openDossier={openDossier} />}
               {section === "sessions" && <Sessions data={data} />}
               {section === "files" && <FilesView data={data} setLightbox={setLightbox} />}
               {section === "messages" && <Messages data={data} />}
@@ -136,6 +145,10 @@ export default function App() {
       </AnimatePresence>
 
       <SearchPalette data={data} open={paletteOpen} onClose={() => setPaletteOpen(false)} go={setSection} />
+
+      <AnimatePresence>
+        {dossierIp && <Dossier key="dossier" ip={dossierIp} onClose={() => setDossierIp(null)} />}
+      </AnimatePresence>
     </div>
   );
 }

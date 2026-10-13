@@ -29,7 +29,7 @@ const h32 = (s) => {
   return (x >>> 0) / 4294967295;
 };
 
-export default function NetMap({ data }) {
+export default function NetMap({ data, openDossier }) {
   const hosts = data?.hosts || [];
   const sessions = data?.sessions || [];
   const alerts = data?.alerts || [];
@@ -197,6 +197,11 @@ export default function NetMap({ data }) {
             <div className="kv"><span>TLS/SNI</span>{sel.tls_names?.length
               ? sel.tls_names.map((t) => <div key={t} className="mini-line">{t}</div>)
               : <b>—</b>}</div>
+            {openDossier && (
+              <button className="follow-btn" onClick={() => openDossier(sel.ip)}>
+                📁 Dossier 360° del host
+              </button>
+            )}
             <div className="kv"><span>Keywords</span>{sel.keyword_hits?.length
               ? sel.keyword_hits.map((k) => <div key={k} className="mini-line warn">{k}</div>)
               : <b>—</b>}</div>

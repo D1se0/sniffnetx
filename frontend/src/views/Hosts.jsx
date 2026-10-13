@@ -12,7 +12,7 @@ function sortRows(rows, key, dir) {
   return dir === "asc" ? r : r.reverse();
 }
 
-export default function Hosts({ data, selected, setSelected }) {
+export default function Hosts({ data, selected, setSelected, openDossier }) {
   const [q, setQ] = useState("");
   const [sortKey, setSortKey] = useState("packet_count");
   const [dir, setDir] = useState("desc");
@@ -42,6 +42,7 @@ export default function Hosts({ data, selected, setSelected }) {
     ["os_guess", "SO (estimado)"], ["ttl_min", "TTL"], ["ports_open", "Puertos"],
     ["sent", "Env"], ["recv", "Rec"], ["packet_count", "Total"],
   ];
+  const noteTargets = new Set((data?.notes || []).map((n) => n.target || ""));
 
   return (
     <div>
@@ -79,6 +80,7 @@ export default function Hosts({ data, selected, setSelected }) {
                   {cols.map(([k, lbl]) => (
                     <th key={k} onClick={() => clickSort(k)}>{lbl}{sortKey === k ? (dir === "asc" ? " ↑" : " ↓") : ""}</th>
                   ))}
+                  <th>Dossier</th>
                 </tr>
               </thead>
               <tbody>
@@ -99,11 +101,19 @@ export default function Hosts({ data, selected, setSelected }) {
                       <td className="mono">{h.sent}</td>
                       <td className="mono">{h.recv}</td>
                       <td className="mono" style={{ color: "var(--accent2)" }}>{h.packet_count}</td>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        {noteTargets.has(`host:${h.ip}`) && <span className="badge c-amber" title="Tiene notas del analista">📝</span>}
+                        {openDossier && (
+                          <button className="follow-btn" onClick={(e) => { e.stopPropagation(); openDossier(h.ip); }}>
+                            dossier
+                          </button>
+                        )}
+                      </td>
                     </motion.tr>
                     <AnimatePresence>
                       {selected === h.ip && (
                         <tr key="detail">
-                          <td colSpan={cols.length} style={{ padding: 0, borderBottom: "none" }}>
+                          <td colSpan={cols.length + 1} style={{ padding: 0, borderBottom: "none" }}>
                             <motion.div
                               className="host-detail"
                               initial={{ opacity: 0, height: 0 }}

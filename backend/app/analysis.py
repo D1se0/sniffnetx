@@ -273,6 +273,19 @@ class TrafficAnalyzer:
         self._scan_tracker: dict[str, dict[str, Any]] = {}   # src -> {ports,t0,dst}
         self._ip_macs: dict[str, set[str]] = {}   # ip -> MACs vistas (spoofing)
         self._mac_ips: dict[str, set[str]] = {}   # mac -> IPs anunciadas
+        # --- beaconing / C2: tiempos de conexión por (src, dst, dport)
+        self._conn_log: dict[tuple, deque] = {}
+        self.beacons: list[dict] = []
+        # --- certificados TLS (fingerprint por SNI → MITM detector)
+        self.tls_certs: list[dict] = []
+        self._cert_by_sni: dict[str, str] = {}
+        self._sni_by_server: dict[tuple, str] = {}
+        # --- DNS tunneling: dominios sospechosos
+        self.dns_suspects: list[dict] = []
+        # --- notas del analista (persistentes en backend/data/notes.json)
+        self.notes: list[dict] = []
+        self._notes_seq = 0
+        self._load_notes()
         self._keywords: list[str] = [k.lower() for k in (keywords or _DEFAULT_KEYWORDS)]
         self.stats = {
             "packets": 0, "ip_packets": 0, "tcp": 0, "udp": 0, "icmp": 0,
@@ -311,6 +324,174 @@ class TrafficAnalyzer:
         self.stats["alerts"] += 1
         if len(self.alerts) > 300:
             del self.alerts[:len(self.alerts) - 300]
+
+    # ----------------------------------------- notas del analista (persisten)
+    def _load_notes(self):
+        try:
+            from pathlib import Path
+            import json as _json
+            p = Path(__file__).resolve().parent.parent / "data" / "notes.json"
+            self.notes = _json.loads(p.read_text("utf-8"))
+            self._notes_seq = max((n.get("id", 0) for n in self.notes), default=0)
+        except Exception:
+            self.notes = []
+
+    def _save_notes(self):
+        try:
+            from pathlib import Path
+            import json as _json
+            p = Path(__file__).resolve().parent.parent / "data" / "notes.json"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(_json.dumps(self.notes, ensure_ascii=False, indent=1), "utf-8")
+        except Exception:
+            pass
+
+    def add_note(self, target: str, tag: str, text: str) -> dict:
+        self._notes_seq += 1
+        n = {"id": self._notes_seq, "target": target, "tag": (tag or "-")[:24],
+             "text": text[:500], "ts": datetime.now(tz=timezone.utc).isoformat(timespec="seconds")}
+        self.notes.append(n)
+        self._save_notes()
+        return n
+
+    def del_note(self, note_id: int):
+        self.notes = [n for n in self.notes if n.get("id") != note_id]
+        self._save_notes()
+
+    # --------------------------------------------------- beaconing / C2
+    def beacon_summary(self, top: int = 25) -> list[dict]:
+        """Beacons: conexiones hacia el mismo destino con intervalos casi
+        idénticos (máquina de C2). Score = regularidad × volumen."""
+        pairs: dict[tuple, dict] = {}
+        for (src, dst, dport), times in self._conn_log.items():
+            p = pairs.setdefault((src, dst), {"times": deque(), "ports": {}})
+            p["times"] += list(times)
+            p["ports"][dport] = p["ports"].get(dport, 0) + len(times)
+        out = []
+        for (src, dst), p in pairs.items():
+            ts = sorted(p["times"])
+            if len(ts) < 6:
+                continue
+            diffs = [ts[i + 1] - ts[i] for i in range(len(ts) - 1)]
+            diffs = [x for x in diffs if 1.0 <= x <= 3600.0]
+            if len(diffs) < 5:
+                continue
+            mean = sum(diffs) / len(diffs)
+            if mean <= 0:
+                continue
+            std = (sum((x - mean) ** 2 for x in diffs) / len(diffs)) ** 0.5
+            cv = std / mean
+            regularity = max(0.0, min(1.0, 1.0 - cv))
+            if regularity < 0.82:
+                continue
+            dport = max(p["ports"], key=lambda k: p["ports"][k])
+            out.append({
+                "src": src, "dst": dst, "dport": dport,
+                "service": _SERVICES.get(dport, str(dport)),
+                "count": len(ts), "mean_s": round(mean, 1),
+                "regularity": round(regularity * 100, 1),
+                "score": round(regularity * len(ts), 1),
+            })
+        out.sort(key=lambda e: -e["score"])
+        return out[:top]
+
+    # --------------------------------------------------- DNS tunneling
+    @staticmethod
+    def _entropy(s: str) -> float:
+        from collections import Counter as _C
+        import math as _m
+        if not s:
+            return 0.0
+        n = len(s)
+        c = _C(s)
+        return -sum((v / n) * _m.log2(v / n) for v in c.values())
+
+    def _check_dns_tunnel(self, name: str, src, dst, t: float, record: dict):
+        if not name:
+            return
+        name_l = name.lower().rstrip(".")
+        labels = [l for l in name_l.split(".") if l]
+        reasons = []
+        if len(name_l) >= 100:
+            reasons.append(f"nombre de {len(name_l)} caracteres")
+        big = max(labels, key=len) if labels else ""
+        if len(big) >= 45 and not big.replace("-", "").isdigit():
+            reasons.append(f"etiqueta de {len(big)} caracteres (‘{big[:24]}…’)")
+        if self._entropy(big) >= 4.0 and len(big) >= 32:
+            reasons.append(f"entropía {self._entropy(big):.2f}")
+        # TXT con payload tipo base64/exóticos
+        for a in record.get("answers", []):
+            if a.get("type") == "TXT" and len(a.get("data", "")) > 120:
+                if self._entropy(a["data"][:200]) >= 3.8:
+                    reasons.append(f"TXT largo (n{len(a['data'])} B, alta entropía)")
+        if not reasons:
+            return
+        base = ".".join(labels[-3:]) if len(labels) >= 3 else name_l
+        key = (src, base)
+        if key in getattr(self, "_tunnel_warned", set()):
+            self.dns_suspects.append({"name": name_l, "base": base, "reason": "+", "src": src, "dst": dst,
+                                      "ts": datetime.fromtimestamp(t, tz=timezone.utc).isoformat(timespec="seconds")})
+            if len(self.dns_suspects) > 200:
+                del self.dns_suspects[:len(self.dns_suspects) - 200]
+            return
+        if not hasattr(self, "_tunnel_warned"):
+            self._tunnel_warned = set()
+        self._tunnel_warned.add(key)
+        self.dns_suspects.append({"name": name_l, "base": base, "reason": " · ".join(reasons), "src": src, "dst": dst,
+                                  "ts": datetime.fromtimestamp(t, tz=timezone.utc).isoformat(timespec="seconds")})
+        if len(self.dns_suspects) > 200:
+            del self.dns_suspects[:len(self.dns_suspects) - 200]
+        self._add_alert("dns-tunnel", "high",
+                        f"Posible túnel DNS vía {base}",
+                        f"{name_l[:80]} desde {src}: {' · '.join(reasons)}", t)
+
+    # ------------------------------------------------ dossier de host (360°)
+    def host_dossier(self, ip: str, limit: int = 300) -> dict:
+        """Todo lo que hizo este host, en una sola línea de tiempo."""
+        ev: list[dict] = []
+
+        def add(ts, kind, title, detail=""):
+            ev.append({"ts": ts or "", "kind": kind, "title": title, "detail": detail})
+
+        for d in self.dns_queries:
+            if d.get("src") == ip or d.get("dst") == ip:
+                for q in (d.get("questions") or [{}]):
+                    ans = "; ".join(str(a.get("data") or "") for a in (d.get("answers") or [])[:3])
+                    add(d.get("ts", ""), "dns", f"DNS {q.get('name', '')} ({q.get('type', '')})",
+                        f"{ans or 'sin respuesta'}")
+        for m in self.messages:
+            if m.get("src") == ip or m.get("dst") == ip:
+                if (m.get("type") or "request") == "request":
+                    add(m.get("ts", ""), "http",
+                        f"{m.get('method', '')} {m.get('path', '')}",
+                        f"host {m.get('host', '')} → {m.get('dst', '')}")
+                else:
+                    add(m.get("ts", ""), "http",
+                        f"HTTP {m.get('status_text', '')[:44]} {m.get('path', '')}",
+                        f"desde {m.get('src', '')} · {m.get('content_type', '')} {m.get('size', 0)} B")
+        for f in self.files:
+            if f.get("src") == ip or f.get("dst") == ip:
+                add(f.get("ts", ""), "file", f"Fichero {f.get('filename', '')}",
+                    f"{f.get('mime', '')} · {f.get('size', 0)} B · {f.get('src', '')} → {f.get('dst', '')}")
+        for c in self.credentials:
+            if c.get("src") == ip or c.get("dst") == ip:
+                add(c.get("ts", ""), "cred",
+                    f"{(c.get('type') or '').upper()} {c.get('user') or ''}",
+                    f"{c.get('domain') or c.get('port')} · {str(c.get('evidence') or c.get('password') or c.get('hash') or '')[:50]}")
+        for k in self.keyword_hits:
+            if k.get("src") == ip or k.get("dst") == ip:
+                add(k.get("ts", ""), "kw", f"Keyword {k.get('keyword', '')}", (k.get("context") or "")[:90])
+        for a in self.alerts:
+            if ip in (a.get("title", "") + " " + a.get("detail", "")):
+                add(a.get("ts", ""), "alert", a.get("title", ""), a.get("detail", ""))
+        for ses in self.sessions.values():
+            if ses.src == ip or ses.dst == ip:
+                add(datetime.fromtimestamp(ses.end, tz=timezone.utc).isoformat(timespec="seconds"),
+                    "session", f"{ses.service} {ses.src}:{ses.sport} ⇄ {ses.dst}:{ses.dport}",
+                    f"{ses.packets} pkt · {ses.bytes} B · {ses.state}")
+        ev.sort(key=lambda e: e["ts"], reverse=True)
+        notes = [n for n in self.notes if n.get("target") == f"host:{ip}" or ip in str(n.get("target", ""))]
+        return {"ip": ip, "timeline": ev[:limit], "total": len(ev), "notes": notes}
 
     def _check_portscan(self, src: str, dst: str, dport: int, t: float):
         """Detector de escaneo de puertos: N puertos distintos hacia un mismo
@@ -427,6 +608,9 @@ class TrafficAnalyzer:
         if sni:
             self._host(src).tls_names.add(sni)
             self._host(dst).tls_names.add(sni)
+            self._sni_by_server[(dst, dport)] = sni   # para casar certificados del servidor
+            if len(self._sni_by_server) > 500:
+                self._sni_by_server.pop(next(iter(self._sni_by_server)))
             # hunting: SNI con patrones habituales de phishing/tracking
             low = sni.lower()
             if low.endswith(".tk") or low.endswith(".top") or low.endswith(".xyz") or low.endswith(".ru") or "login-" in low or "secure-" in low:
@@ -434,6 +618,49 @@ class TrafficAnalyzer:
                                 f"SNI sospechoso: {sni}",
                                 f"Dominio TLS hacia {dst} con patrón habitual de phishing/trackers",
                                 t)
+
+    # ---------------------------------------------------- certificados (MITM)
+    def _process_server_tls(self, payload: bytes, src, dst, sport, dport, t: float):
+        """Escanea registros TLS del servidor buscando handshake Certificate (0x0b)
+        y ficha por fingerprint: si un dominio presenta cert distinto → posible MITM."""
+        i = 0
+        while i + 10 <= len(payload):
+            if payload[i] != 0x16:
+                i += 1
+                continue
+            rec_len = int.from_bytes(payload[i + 3:i + 5], "big")
+            if rec_len <= 0 or i + 5 + rec_len > len(payload):
+                return
+            hs = payload[i + 5:i + 5 + rec_len]
+            if hs[0] == 0x0b:                     # Certificate handshake
+                body_len = int.from_bytes(hs[1:4], "big")
+                if body_len > rec_len - 4:
+                    return                        # fragmentado: no fiar el hash
+                body = hs[4:4 + body_len]
+                if len(body) >= 6:
+                    chain_len = int.from_bytes(body[0:3], "big")
+                    if chain_len <= body_len - 3:
+                        cert_len = int.from_bytes(body[3:6], "big")
+                        cert = body[6:6 + cert_len]
+                        if len(cert) == cert_len and cert_len > 120:
+                            fp = hashlib.sha256(cert).hexdigest()[:16]
+                            key = self._sni_by_server.get((src, sport), "")
+                            prev = self._cert_by_sni.get(key)
+                            if prev and prev != fp:
+                                self._add_alert("tls-cert", "high",
+                                                f"Certificado cambiado para {key or src}",
+                                                f"Antes {prev[:12]}… · ahora {fp[:12]}… — posible MITM", t)
+                            if key:
+                                self._cert_by_sni[key] = fp
+                            self.tls_certs.append({
+                                "sni": key, "fp": fp, "size": cert_len,
+                                "src": src, "dst": dst,
+                                "ts": datetime.fromtimestamp(t, tz=timezone.utc).isoformat(timespec="seconds"),
+                            })
+                            if len(self.tls_certs) > 300:
+                                del self.tls_certs[:len(self.tls_certs) - 300]
+                return
+            i += rec_len + 5
 
     # ------------------------------------------------------------- Ficheros
     def _register_file(self, size, filename, ct, src, dst, kind, data: bytes | None):
@@ -510,6 +737,11 @@ class TrafficAnalyzer:
         if ses is None:
             ses = TCPSession(src, dst, sport, dport, t)
             self.sessions[key] = ses
+            # NUEVA conexión → log para el detector de beacons (agrupado por
+            # (src, dst, dport) porque el puerto efímero cambia en cada beep)
+            self._conn_log.setdefault((src, dst, dport), deque(maxlen=400)).append(t)
+            if len(self._conn_log) > 400:
+                self._conn_log.pop(next(iter(self._conn_log)))
         ses.packets += 1
         ses.bytes += len(pkt)
         ses.end = t
@@ -546,6 +778,8 @@ class TrafficAnalyzer:
         self._scan_blob(payload, src, dst, sport, dport, ses.service, t)
         if dport in (443, 8443) or sport in (443, 8443):
             self._process_tls(payload, src, dst, sport, dport, t)
+            if sport in (443, 8443):
+                self._process_server_tls(payload, src, dst, sport, dport, t)
 
     # ------------------------------------------------------------- HTTP
     def _process_http(self, pkt: Packet, ses: TCPSession, src, dst, hs, hd, t: float):
@@ -760,6 +994,10 @@ class TrafficAnalyzer:
             pass
 
         self.dns_queries.append(record)
+
+        # hunting: túneles DNS
+        for qe in record["questions"]:
+            self._check_dns_tunnel(qe.get("name") or "", src, dst, t, record)
 
         for qe in record["questions"]:
             name = qe["name"].rstrip(".")

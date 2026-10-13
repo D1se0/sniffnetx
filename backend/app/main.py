@@ -119,6 +119,10 @@ def snapshot(compact: bool = True) -> dict:
             "sessions": _sessions_dict(),
             "alerts": analyzer.alerts[-150:][::-1],
             "tls": analyzer.tls_sessions[-200:][::-1],
+            "beacons": analyzer.beacon_summary(),
+            "certs": analyzer.tls_certs[-100:][::-1],
+            "dns_susp": analyzer.dns_suspects[-100:][::-1],
+            "notes": analyzer.notes,
         }
 
 
@@ -291,6 +295,12 @@ def api_export(what: str, fmt: str):
                     "parameters", "keywords", "sessions", "all"):
         raise HTTPException(404, f"seccion desconocida: {what}")
     sections = [what] if what != "all" else ["hosts", "files", "messages", "credentials", "dns", "parameters", "keywords", "sessions"]
+    if what == "all":
+        # evidencia añadida de caza/correlacion: solo presente si hay datos
+        if snap.get("beacons"):
+            sections.append("beacons")
+        if snap.get("notes"):
+            sections.append("notes")
     if fmt == "json":
         data = {"_meta": {
                     "tool": "SniffNex", "version": "1.0.0",
@@ -487,6 +497,29 @@ def api_stream(src: str, sport: int, dst: str, dport: int, limit: int = Query(40
             "server_sample": "".join(text["S"])[:8000],
         },
     }
+
+
+# ----------------- notas del analista + dossier de host --------------------
+class NoteReq(BaseModel):
+    target: str      # "host:1.2.3.4" | "pkt:12" | "session:..." | "file:3"
+    tag: str = "-"
+    text: str = ""
+
+
+@app.post("/api/notes")
+def api_note_add(req: NoteReq):
+    return {"ok": True, "note": analyzer.add_note(req.target, req.tag, req.text)}
+
+
+@app.delete("/api/notes/{note_id}")
+def api_note_del(note_id: int):
+    analyzer.del_note(note_id)
+    return {"ok": True}
+
+
+@app.get("/api/host/{ip}/dossier")
+def api_host_dossier(ip: str):
+    return analyzer.host_dossier(ip)
 
 
 @app.get("/api/health")
